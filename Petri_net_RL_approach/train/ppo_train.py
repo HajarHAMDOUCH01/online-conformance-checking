@@ -6,23 +6,21 @@ import numpy as np
 import pm4py
 
 import sys 
-sys.path.append("/content/Online-Conformance-Checking")
+sys.path.append(r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach")
 
-from model.train.ppo_env import AlignmentEnv
-from model.model.ppo_model import ActorCritic
-from model.model.model import Vocab
-
+from ppo_env import AlignmentEnv
+from model.ppo_model import ActorCritic
+from model.model import Vocab
 
 sys.modules['__main__'].Vocab = Vocab
 sys.modules['model'].Vocab = Vocab
 sys.modules['model.model'].Vocab = Vocab
 
-BASE      = r"/content/drive/MyDrive/pdc2025"
-DS_CSV    = BASE + r"/prefix_alignment_dataset_v_2.csv"
-MODEL_PT  = BASE + r"/phase1_model.pt"
-PNML_PATH = BASE + r"/pdc2025_000000.pnml"
-PPO_OUT   = BASE + r"/ppo_model_epoch_1.pt"
-# PPO_CHEKPOINT   = BASE + r"/ppo_model_epoch_5.pt"
+DS_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\prefix_alignment_dataset_pdc.csv"
+PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\pdc2025_000000.pnml"
+MODEL_PHASE1_OUT   = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase1.pt"
+# MODEL_PHASE1_OUT = None
+PPO_OUT            = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase_ppo.pt"
 
 GAMMA      = 0.99
 LAM        = 0.95
@@ -31,9 +29,9 @@ ENT_COEF   = 0.01
 VF_COEF    = 0.5
 LR         = 3e-4
 MAX_GRAD   = 0.5
-PPO_EPOCHS = 1
-EPISODES   = 1
-BATCH_SIZE = 32
+PPO_EPOCHS = 2
+EPISODES   = 2
+BATCH_SIZE = 8
 MAX_STEPS  = 150
 
 
@@ -51,7 +49,6 @@ def compute_gae(rewards, values, dones):
     ret = [a + v for a, v in zip(adv, values)]
     return adv, ret
 
-
 def ppo_update(model, opt, batch):
     flat_advs, flat_rets, flat_old = [], [], []
     for traj in batch:
@@ -63,7 +60,12 @@ def ppo_update(model, opt, batch):
     adv_t = torch.tensor(flat_advs, dtype=torch.float32)
     ret_t = torch.tensor(flat_rets, dtype=torch.float32)
     old_t = torch.tensor(flat_old,  dtype=torch.float32)
-    adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
+    if adv_t.numel() > 1:
+        std = adv_t.std()
+        if std > 1e-6:
+            adv_t = (adv_t - adv_t.mean()) / (std + 1e-8)
+        else:
+            adv_t = adv_t - adv_t.mean() 
     batch_loss = 0.0
 
     for _ in range(PPO_EPOCHS):
@@ -114,8 +116,7 @@ def ppo_update(model, opt, batch):
 
     # return loss.item()
 
-
-K_TRAIN = 400  
+K_TRAIN = 100
 
 def main():
     df = pd.read_csv(DS_CSV)
@@ -130,11 +131,11 @@ def main():
     labels = [t.label for t in net.transitions if t.label is not None]
     env    = AlignmentEnv(net, im, labels)
 
-    ckpt  = torch.load(MODEL_PT, map_location='cpu', weights_only=False)
-    from model.model.model import Vocab
+    ckpt  = torch.load(MODEL_PHASE1_OUT, map_location='cpu', weights_only=False)
+    # from model.model import Vocab
     vocab = ckpt["vocab"]
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
-    model.load_from_supervised(MODEL_PT)
+    model.load_from_supervised(MODEL_PHASE1_OUT)
     for label in env.LABEL_SPACE:
       vocab.add(label)
     # continue_checkpoint_ppo_model = torch.load(PPO_CHEKPOINT, map_location='cpu', weights_only=False)
@@ -149,7 +150,6 @@ def main():
     cases = df['case_id'].unique()
 
     for ep in range(EPISODES):
-        # print("testing with 1 epoch only")
         np.random.shuffle(cases)
         batch = []
 
@@ -160,11 +160,7 @@ def main():
                 prefix = row['prefix_activities']
                 src    = torch.tensor([vocab.encode(prefix)])
                 traj, _ = model.generate(src=src, prefix=prefix, env=env, vocab=vocab)
-                # if idx % 10 == 0:
-                #   print(f"\ncase : , {idx} and case_id = {cid}")
-                #   print("\nprefix : ", prefix)
-                #   print("\ngeerated alignement : ", traj['labels_str'])
-                #   print("\ngeerated alignement : ", traj['moves_str'])
+                
                 if traj:
                     batch.append(traj)
 
@@ -182,7 +178,6 @@ def main():
     torch.save({"state": model.state_dict(), "vocab": vocab,
                 "n_places": env.n_places, "n_labels": len(env.LABEL_SPACE)}, PPO_OUT)
     print(f"Saved → {PPO_OUT}")
-
 
 if __name__ == '__main__':
     main()

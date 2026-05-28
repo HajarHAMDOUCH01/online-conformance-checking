@@ -4,23 +4,21 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import pm4py
+import sys 
+sys.path.append(r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach")
 
-import sys
-sys.path.append("/content/Online-Conformance-Checking")
-
-from model.train.ppo_env import AlignmentEnv
-from model.model.ppo_model import ActorCritic
-from model.model.model import Vocab
+from ppo_env import AlignmentEnv
+from model.ppo_model import ActorCritic
+from model.model import Vocab
 
 sys.modules['__main__'].Vocab = Vocab
 sys.modules['model'].Vocab = Vocab
 sys.modules['model.model'].Vocab = Vocab
 
-BASE      = r"/content/drive/MyDrive/pdc2025"
-DS_CSV    = BASE + r"/prefix_alignment_dataset_v_2.csv"
-MODEL_PT  = BASE + r"/ppo_model_epoch_10.pt"   
-PNML_PATH = BASE + r"/pdc2025_000000.pnml"
-PPO_OUT   = BASE + r"/ppo_model_phase3_epoch_1.pt"
+DS_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\prefix_alignment_dataset_pdc.csv"
+PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\pdc2025_000000.pnml"
+MODEL_PHASE1_OUT   = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase1.pt"
+PPO_OUT            = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase_ppo.pt"
 
 GAMMA      = 0.99
 LAM        = 0.95
@@ -29,9 +27,9 @@ ENT_COEF   = 0.01
 VF_COEF    = 0.5
 LR         = 1e-4          
 MAX_GRAD   = 0.5
-PPO_EPOCHS = 1
-EPISODES   = 5
-BATCH_SIZE = 8
+PPO_EPOCHS = 2
+EPISODES   = 20
+BATCH_SIZE = 16
 MAX_STEPS  = 150
 
 
@@ -49,7 +47,7 @@ def collect_episode(model, env, prefix, src_ids, vocab, generated_alignment):
     mv = env.reset(prefix)          
     h  = model.encode(src_ids)
 
-    for move_str, label_str in generated_alignment:
+    for move_str, label_str in zip(generated_alignment['moves_str'], generated_alignment['labels_str']):
 
         if move_str not in env.MOVE_SPACE:
             break
@@ -178,8 +176,7 @@ def ppo_update(model, opt, batch):
 
     return loss.item()
 
-
-K_TRAIN = 400
+K_TRAIN = 100
 
 def main():
     df = pd.read_csv(DS_CSV)
@@ -194,15 +191,13 @@ def main():
     labels = [t.label for t in net.transitions if t.label is not None]
     env    = AlignmentEnv(net, im, labels)
 
-    ckpt  = torch.load(MODEL_PT, map_location='cpu', weights_only=False)
-    vocab = ckpt["vocab"]
+    # ckpt  = torch.load(MODEL_PT, map_location='cpu', weights_only=False)
+    # vocab = ckpt["vocab"]
+    vocab = Vocab()
     for label in env.LABEL_SPACE:
         vocab.add(label)
 
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
-    model.load_state_dict(ckpt["state"])
-    model.train()
-    print("Loaded phase-2 weights.")
 
     opt   = torch.optim.Adam(model.parameters(), lr=LR)
     cases = df['case_id'].unique()
@@ -225,6 +220,7 @@ def main():
                 src = torch.tensor([vocab.encode(prefix)])
 
                 model.eval()
+                #here generate is called with torch.no_grad()
                 with torch.no_grad():
                     generated, n_invalid = model.generate(
                         src, prefix, env, vocab, max_len=MAX_STEPS
@@ -234,7 +230,7 @@ def main():
                 if not generated:
                     skipped += 1
                     continue
-
+                # here traj data is given by collect_episode function
                 traj = collect_episode(
                     model, env, prefix, src, vocab,
                     generated_alignment=generated
@@ -263,9 +259,8 @@ def main():
         "vocab"   : vocab,
         "n_places": env.n_places,
         "n_labels": len(env.LABEL_SPACE),
-    }, PPO_OUT)
-    print(f"Saved → {PPO_OUT}")
-
+    }, MODEL_PHASE1_OUT)
+    print(f"Saved → {MODEL_PHASE1_OUT}")
 
 if __name__ == '__main__':
     main()

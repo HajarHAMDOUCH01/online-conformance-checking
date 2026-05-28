@@ -6,10 +6,9 @@ import pm4py
 from pm4py.objects.petri_net.obj import PetriNet
 from pm4py.objects.log.importer.xes import importer as xes_importer
 
-
-PNML_PATH    = r"/content/drive/MyDrive/pdc2025/pdc2025_000000.pnml"
-XES_PATH     = r"/content/drive/MyDrive/pdc2025/pdc2025_000000.xes"
-OUT_CSV      = r"/content/drive/MyDrive/pdc2025/prefix_alignment_dataset.csv"
+OUT_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\prefix_alignment_dataset_pdc.csv"
+PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\pdc2025_000000.pnml"
+XES_PATH           = None
 ACTIVITY_KEY = "concept:name"
 
 print("=" * 70)
@@ -23,19 +22,20 @@ net, im, fm = pm4py.read_pnml(PNML_PATH)
 # gviz = pn_visualizer.apply(net, im, fm)
 # pn_visualizer.view(gviz)
 
+# log_all = xes_importer.apply(XES_PATH)
+
 print(f"Places           : {len(net.places)}")
 print(f"Transitions      : {len(net.transitions)}")
 print(f"Unique labels    : {len({t.label for t in net.transitions if t.label})}")
 print(f"Silent trans.    : {sum(1 for t in net.transitions if t.label is None)}")
 
-
-_in_arcs  = defaultdict(list)   
-_out_arcs = defaultdict(list)   
+_in_arcs  = defaultdict(list)
+_out_arcs = defaultdict(list)
 for arc in net.arcs:
     if isinstance(arc.source, PetriNet.Place):
-        _in_arcs[arc.target].append((arc.source.name, arc.weight))  
+        _in_arcs[arc.target].append((arc.source.name, arc.weight))
     else:
-        _out_arcs[arc.source].append((arc.target.name, arc.weight))  
+        _out_arcs[arc.source].append((arc.target.name, arc.weight))
 
 _visible_transitions = [t for t in net.transitions if t.label is not None]
 _silent_transitions  = [t for t in net.transitions if t.label is None]
@@ -68,18 +68,17 @@ def _fire(m_dict: dict, transition) -> dict:
         result[pname] = result.get(pname, 0) + w
     return result
 
-_counter = itertools.count()
-
-
 def _dijkstra_prefix_alignment(prefix: list) -> tuple:
+    """Fresh alignment from scratch for the full prefix."""
+    goal_pos   = len(prefix)
+    dist       = {}
+    parent     = {}
+    init_state = (_IM_TUPLE, 0)          # always start from initial marking
 
-    goal_pos = len(prefix)
-    dist     = {}
-    parent   = {}
+    dist[init_state]   = 0
+    parent[init_state] = None
+    _counter           = itertools.count()
 
-    init_state          = (_IM_TUPLE, 0)
-    dist[init_state]    = 0
-    parent[init_state]  = None
     heap = [(0, next(_counter), _IM_TUPLE, 0)]
 
     while heap:
@@ -106,9 +105,9 @@ def _dijkstra_prefix_alignment(prefix: list) -> tuple:
                 (p, c) for p, c in new_m_dict.items() if c > 0
             ))
             ns = (new_tup, new_pos)
-            if new_cost < dist.get(ns, float('inf')):
-                dist[ns]    = new_cost
-                parent[ns]  = (_s, move)
+            if new_cost <= dist.get(ns, float('inf')):
+                dist[ns]   = new_cost
+                parent[ns] = (_s, move)
                 heapq.heappush(heap, (new_cost, next(_counter), new_tup, new_pos))
 
         for t in _silent_transitions:
@@ -131,68 +130,40 @@ def _dijkstra_prefix_alignment(prefix: list) -> tuple:
 
 
 def align_prefix(activities: list) -> dict:
-
+    """Align prefix[:k] from first activity each time."""
     clean = [str(a) for a in activities]
 
     try:
         raw_alignment, total_cost = _dijkstra_prefix_alignment(clean)
     except Exception as e:
-        return {"error": str(e)}
+        raise RuntimeError(e)
 
     if total_cost == float('inf'):
         return {"error": "no_path_found"}
 
-    aligned_prefix, step_types = [], []
-    sync_mv = log_mv = model_mv = 0
+    aligned    = []
+    step_types = []
 
     for mv_type, label in raw_alignment:
         if mv_type == 'tau':
-            continue          
-        aligned_prefix.append(label)
+            continue
+        aligned.append(label)
         step_types.append(mv_type)
-        if mv_type == 'S':   sync_mv  += 1
-        elif mv_type == 'M': model_mv += 1
-        elif mv_type == 'L': log_mv   += 1
 
-    assert log_mv + model_mv == total_cost, \
-        f"Cost mismatch: log+model={log_mv+model_mv} vs Dijkstra={total_cost}"
-    assert log_mv + sync_mv == len(clean), \
-        f"Log events not fully consumed: {log_mv}+{sync_mv} != {len(clean)}"
+    total_sync  = step_types.count('S')
+    total_log   = step_types.count('L')
+    total_model = step_types.count('M')
 
     return dict(
-        aligned_prefix = aligned_prefix,
+        aligned_prefix = aligned,
         step_types     = step_types,
-        cost           = log_mv + model_mv,
-        sync_moves     = sync_mv,
-        log_moves      = log_mv,
-        model_moves    = model_mv,
-        is_conforming  = (log_mv == 0 and model_mv == 0),
+        cost           = total_cost,
+        sync_moves     = total_sync,
+        log_moves      = total_log,
+        model_moves    = total_model,
+        is_conforming  = (total_log == 0 and total_model == 0),
         error          = None,
     )
-
-
-print("\n" + "=" * 70)
-print("STEP 5 — Loading XES and filtering negative traces")
-print("=" * 70)
-
-log_all = xes_importer.apply(XES_PATH)
-neg_traces = []
-n_pos = n_neg = 0
-
-for trace in log_all:
-    is_pos = trace.attributes.get("pdc:isPos", True)
-    if isinstance(is_pos, str):
-        is_pos = is_pos.lower() == "true"
-    if is_pos:
-        n_pos += 1
-    else:
-        n_neg += 1
-        neg_traces.append(trace)
-
-print(f"Positive : {n_pos}")
-print(f"Negative : {n_neg}")
-
-
 print("\n" + "=" * 70)
 print("STEP 6 — Dataset generation")
 print("=" * 70)
@@ -202,47 +173,49 @@ write_header   = not os.path.exists(OUT_CSV)
 t_start        = time.time()
 total_prefixes = 0
 errors         = 0
+# for idx, trace in enumerate(neg_traces):
+#     case_id    = str(trace.attributes.get("concept:name", f"case_{idx}"))
+#     activities = [str(ev["category"]) for ev in trace]
+#     rows       = []
 
-for idx, trace in enumerate(neg_traces):
-    case_id    = str(trace.attributes.get("concept:name", f"case_{idx}"))
-    activities = [str(ev[ACTIVITY_KEY]) for ev in trace]
-    rows       = []
+#     for k in range(1, len(activities) + 1, 2):
+#         result = align_prefix(activities[:k])   # fresh each time, no state passed
 
-    for k in range(1, len(activities) + 1):
-        result = align_prefix(activities[:k])
-        if result.get("error"):
-            errors += 1
-        rows.append({
-            "case_id":           case_id,
-            "prefix_length":     k,
-            "prefix_activities": str(activities[:k]),
-            "aligned_prefix":    str(result.get("aligned_prefix")),
-            "step_types":        str(result.get("step_types")),
-            "cost":              result.get("cost"),
-            "sync_moves":        result.get("sync_moves"),
-            "log_moves":         result.get("log_moves"),
-            "model_moves":       result.get("model_moves"),
-            "is_conforming":     result.get("is_conforming"),
-            "error":             result.get("error"),
-        })
+#         if result.get("error"):
+#             errors += 1
 
-    pd.DataFrame(rows).to_csv(
-        OUT_CSV, mode="a", header=write_header, index=False
-    )
-    write_header   = False
-    total_prefixes += len(rows)
+#         rows.append({
+#             "case_id":           case_id,
+#             "prefix_length":     k,
+#             "prefix_activities": str(activities[:k]),
+#             "aligned_prefix":    str(result.get("aligned_prefix")),
+#             "step_types":        str(result.get("step_types")),
+#             "cost":              result.get("cost"),
+#             "sync_moves":        result.get("sync_moves"),
+#             "log_moves":         result.get("log_moves"),
+#             "model_moves":       result.get("model_moves"),
+#             "is_conforming":     result.get("is_conforming"),
+#             "error":             result.get("error"),
+#         })
 
-    elapsed = time.time() - t_start
-    avg_s   = elapsed / (idx + 1)
-    eta_s   = avg_s * (len(neg_traces) - idx - 1)
 
-    if (idx + 1) % 50 == 0 or idx == 0:
-        print(
-            f"  [{idx+1:4d}/{len(neg_traces)}]  "
-            f"case={case_id!r}  prefixes={len(rows)}  "
-            f"elapsed={elapsed:.1f}s  ETA={eta_s:.0f}s  "
-            f"errors={errors}"
-        )
+#     pd.DataFrame(rows).to_csv(
+#         OUT_CSV, mode="a", header=write_header, index=False
+#     )
+#     write_header    = False
+#     total_prefixes += len(rows)
 
-print(f"\nDone. Total prefixes: {total_prefixes}  Errors: {errors}")
-print(f"Saved → {OUT_CSV}")
+#     elapsed = time.time() - t_start
+#     avg_s   = elapsed / (idx + 1)
+#     eta_s   = avg_s * (len(neg_traces) - idx - 1)
+
+#     if (idx + 1) % 50 == 0 or idx == 0:
+#         print(
+#             f"  [{idx+1:4d}/{len(neg_traces)}]  "
+#             f"case={case_id!r}  prefixes={len(rows)}  "
+#             f"elapsed={elapsed:.1f}s  ETA={eta_s:.0f}s  "
+#             f"errors={errors}"
+#         )
+
+# print(f"\nDone. Total prefixes: {total_prefixes}  Errors: {errors}")
+# print(f"Saved → {OUT_CSV}")

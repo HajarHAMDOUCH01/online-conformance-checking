@@ -4,17 +4,18 @@ import pandas as pd
 import pm4py
 
 import sys 
-sys.path.append("/content/Online-Conformance-Checking/")
+sys.path.append(r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach")
 
-from model.train.ppo_env import AlignmentEnv
-from model.model.ppo_model import ActorCritic
+from train.ppo_env import AlignmentEnv
+from model.ppo_model import ActorCritic
 
-BASE      = r"/content/drive/MyDrive"
-DS_CSV    = BASE + r"/pdc2025/prefix_alignment_dataset_v_2.csv"
-PPO_PT    = BASE + r"/pdc2025/ppo_model_epoch_1.pt"
-PNML_PATH = BASE + r"/pdc2025/pdc2025_000000.pnml"
+DS_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\prefix_alignment_dataset_pdc.csv"
+PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\pdc2025_000000.pnml"
+PPO_PT   = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase1.pt"
+# MODEL_PHASE1_OUT = None
+# PPO_PT            = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase_ppo.pt"
 
-N_CASES      = 50
+N_CASES      = 48
 MAX_PREFIXES = 50
 
 
@@ -84,7 +85,6 @@ def evaluate_case(case_id, case_df, model, vocab, env):
         generated, _ = model.generate(src_ids, prefix, env, vocab)
         val = validate_alignment(generated, prefix, env)
 
-        print(f"  Net-valid          : {'YES' if val['is_valid'] else 'NO'} ({val['n_invalid']} illegal fires)")
         gen_moves  = [mv for mv in generated['moves_str']]
         gen_labels = [label for label in generated['labels_str']]
         gen_cost   = sum(1 for mv in gen_moves if mv != "S")
@@ -110,7 +110,7 @@ def evaluate_case(case_id, case_df, model, vocab, env):
     print(f"Avg cost delta : {total_cost_delta / n:.4f}")
     print(f"Exact match    : {exact_match_count}/{n}")
 
-K_TRAIN = 400
+K_TRAIN = 100
 def main():
     ckpt     = torch.load(PPO_PT, map_location="cpu", weights_only=False)
     vocab    = ckpt["vocab"]

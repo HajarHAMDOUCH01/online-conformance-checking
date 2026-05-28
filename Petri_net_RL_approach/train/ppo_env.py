@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+import random
 import itertools
 from collections import defaultdict
 
@@ -49,7 +50,7 @@ class AlignmentEnv:
         self.pos     = 0
         self.marking = Marking({p: v for p, v in self.im.items()})
         self._inserted_model_moves: list[str] = []
-        self._tau_closure()
+        # self._tau_closure()
         return self.marking_vec()
 
     def marking_vec(self) -> torch.Tensor:
@@ -99,6 +100,12 @@ class AlignmentEnv:
                 mask[self.LABEL_SPACE.index(act)] = True
 
         elif move == "M":
+            """
+            For M move: 
+            True for all labels that correspond 
+            to currently enabled visible transitions. 
+            The model can fire any enabled activity, 
+            regardless of what the trace shows."""
             enabled_labels = {t.label for t in enabled if t.label is not None}
             for i, l in enumerate(self.LABEL_SPACE):
                 if l in enabled_labels:
@@ -120,9 +127,9 @@ class AlignmentEnv:
         if self.is_done():
             return 0.0, True
 
-        marking_before = self._pm4py_marking_to_name_dict(self.marking)
-        prefix_before  = self._intermediate_prefix()
-        c_before = self._dijkstra_remaining_cost(marking_before, prefix_before)
+        # marking_before = self._pm4py_marking_to_name_dict(self.marking)
+        # prefix_before  = self._intermediate_prefix()
+        # c_before = self._dijkstra_remaining_cost(marking_before, prefix_before)
 
         act     = self.current_activity()
         enabled = self._enabled_visible()
@@ -141,7 +148,10 @@ class AlignmentEnv:
                     break
 
             if not fired:
-                return -2.0, self.is_done()
+                # This should never happen with masking - indicates a exception
+                raise RuntimeError(f"Invalid {move}-move: label '{label}' not enabled. "
+                                f"Enabled: {[t.label for t in enabled]}. "
+                                f"Current activity: {self.current_activity()}")
 
             if move == "S":
                 base_reward = +1.0
@@ -153,13 +163,13 @@ class AlignmentEnv:
         else:
             base_reward = -1.0
 
-        self._tau_closure()
+        # self._tau_closure()
 
-        marking_after = self._pm4py_marking_to_name_dict(self.marking)
-        prefix_after  = self._intermediate_prefix()
-        c_after = self._dijkstra_remaining_cost(marking_after, prefix_after)
+        # marking_after = self._pm4py_marking_to_name_dict(self.marking)
+        # prefix_after  = self._intermediate_prefix()
+        # c_after = self._dijkstra_remaining_cost(marking_after, prefix_after)
 
-        shaping      = LOOKAHEAD_LAMBDA * (c_before - c_after)
+        # shaping      = LOOKAHEAD_LAMBDA * (c_before - c_after)
         total_reward = base_reward 
 
         return total_reward, self.is_done()
@@ -206,19 +216,19 @@ class AlignmentEnv:
                         heap, (new_cost, next(_dijkstra_counter), new_tup, new_pos)
                     )
 
-            for t in self._silent_transitions:
-                if self._dijk_enabled(m_dict, t):
-                    _push(self._dijk_fire(m_dict, t), pos, cost)
-
+            # for reachable_m in self._tau_closure_dict(m_dict):
+            reachable_markings = self._tau_closure_dict(m_dict)
+            reachable_m = random.choice(reachable_markings)
+            # sync
             for t in self._label_to_trans.get(act, []):
-                if self._dijk_enabled(m_dict, t):
-                    _push(self._dijk_fire(m_dict, t), pos + 1, cost)
-
+                if self._dijk_enabled(reachable_m, t):
+                    _push(self._dijk_fire(reachable_m, t), pos + 1, cost)
+            # model
             for t in self._visible_transitions:
-                if self._dijk_enabled(m_dict, t):
-                    _push(self._dijk_fire(m_dict, t), pos, cost + 1)
-
-            _push(m_dict, pos + 1, cost + 1)
+                if self._dijk_enabled(reachable_m, t):
+                    _push(self._dijk_fire(reachable_m, t), pos, cost + 1)
+            # log
+            _push(reachable_m, pos + 1, cost + 1)
         
         return float('inf')
 
@@ -255,6 +265,24 @@ class AlignmentEnv:
             safety += 1
             for t in self.sem.enabled_transitions(self.net, self.marking):
                 if t.label is None:
-                    self.marking = self.sem.weak_execute(t, self.marking)
+                    self.marking = self.sem.weak_execute(t, self.net, self.marking) # this keeps the alst obtained marking 
                     changed = True
                     break
+
+    def _tau_closure_dict(self, m_dict: dict) -> list[dict]:
+        """Return all markings reachable via silent transitions from m_dict."""
+        visited = set()
+        queue   = [m_dict]
+        result  = []
+
+        while queue:
+            cur = queue.pop()
+            key = tuple(sorted(cur.items()))
+            if key in visited:
+                continue
+            visited.add(key)
+            result.append(cur)
+            for t in self._silent_transitions:
+                if self._dijk_enabled(cur, t):
+                    queue.append(self._dijk_fire(cur, t))
+        return result

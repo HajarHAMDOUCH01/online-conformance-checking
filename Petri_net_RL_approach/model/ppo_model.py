@@ -3,7 +3,7 @@ import torch.nn as nn
 
 class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
-                 emb_dim: int = 32, hidden_dim: int = 64):
+                 emb_dim: int = 64, hidden_dim: int = 128):
         super().__init__()
 
         self.emb = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
@@ -36,7 +36,8 @@ class ActorCritic(nn.Module):
         move_logits  = self.move_head(hidden)
         label_logits = self.label_head(hidden)
         value        = self.critic(hidden).squeeze(-1)
-
+        
+        # print("\nmove_logits : ", move_logits)
         return move_logits, label_logits, value, new_h
 
     def load_from_supervised(self, ckpt_path: str):
@@ -74,7 +75,7 @@ class ActorCritic(nn.Module):
     def generate(self, src: torch.Tensor, prefix: list, env, vocab, max_len: int = 150, train=True):
         self.train()
         data = dict(marks=[], moves=[], labels=[], moves_str=[], labels_str=[], old_lps=[],
-                rewards=[], values=[], dones=[], src_ids=src, act_ids=[])
+                values=[], dones=[], src_ids=src, act_ids=[])
         h  = self.encode(src)
         mv = env.reset(prefix)
         
@@ -86,23 +87,23 @@ class ActorCritic(nn.Module):
             act = env.current_activity()
             act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
             data['act_ids'].append(act_id)
-            if train:
-                move_logits, label_logits, value, h = self.decode_step(mv, h, act_id)
-            else:
-                with torch.no_grad():
-                    move_logits, label_logits, value, h = self.decode_step(mv, h, act_id)
+            move_logits, label_logits, value, h = self.decode_step(mv, h, act_id)
             ml = move_logits.clone()
+
             ml[0, ~move_mask] = -1e9
             move_dist = torch.distributions.Categorical(torch.softmax(ml[0], -1))
-            move      = move_dist.sample()
-            move_lp   = move_dist.log_prob(move)
-
+            if train:
+                move      = move_dist.sample()
+            else: 
+                move = move_dist.argmax()
             label_mask = env.valid_label_mask(env.MOVE_SPACE[move.item()])
             ll = label_logits.clone()
             ll[0, ~label_mask] = -1e9
             label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
-            label      = label_dist.sample()
-            label_lp   = label_dist.log_prob(label)
+            if train:
+                label = label_dist.sample()
+            else:
+                label = label_dist.argmax()
             move_str  = env.MOVE_SPACE[move]
             label_str = env.LABEL_SPACE[label]
             
@@ -118,8 +119,6 @@ class ActorCritic(nn.Module):
             data['labels'].append(label.item())
             data['moves_str'].append(move_str)
             data['labels_str'].append(label_str)
-            data['old_lps'].append((move_lp + label_lp).item())
-            data['rewards'].append(float(reward))
             data['values'].append(value.item())
             data['dones'].append(done)
 
