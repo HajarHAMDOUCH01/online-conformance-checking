@@ -70,58 +70,61 @@ class ActorCritic(nn.Module):
         print(f"Loaded : {loaded}")
         print(f"Skipped: {skipped}")
         return ckpt['vocab']
-
-    # @torch.no_grad()
-    def generate(self, src: torch.Tensor, prefix: list, env, vocab, max_len: int = 150, train=True):
+    def generate(self, src, prefix, env, vocab, max_len=150, train=True):
         self.train()
-        data = dict(marks=[], moves=[], labels=[], moves_str=[], labels_str=[], old_lps=[],
-                values=[], dones=[], src_ids=src, act_ids=[])
+        data = dict(
+            marks=[], moves=[], labels=[],
+            moves_str=[], labels_str=[],
+            move_logits=[],   
+            label_logits=[],  
+            old_lps=[], values=[], dones=[], src_ids=src, act_ids=[]
+        )
         h  = self.encode(src)
         mv = env.reset(prefix)
-        
         n_invalid = 0
 
         for _ in range(1, max_len):
-            move_mask = env.valid_move_mask()
-
-            act = env.current_activity()
-            act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
+            move_mask  = env.valid_move_mask()
+            act        = env.current_activity()
+            act_id     = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
             data['act_ids'].append(act_id)
-            move_logits, label_logits, value, h = self.decode_step(mv, h, act_id)
-            ml = move_logits.clone()
 
-            ml[0, ~move_mask] = -1e9
+            move_logits, label_logits, value, h = self.decode_step(mv, h, act_id)
+
+            # ── Save RAW logits BEFORE masking (needed for CE loss) ───────────────
+            data['move_logits'].append(move_logits[0])    # shape (|MOVE_SPACE|,)
+            data['label_logits'].append(label_logits[0])  # shape (|LABEL_SPACE|,)
+
+            # ── Masked sampling (unchanged) ───────────────────────────────────────
+            ml = move_logits.clone()
+            # ml[0, ~move_mask] = -1e9
             move_dist = torch.distributions.Categorical(torch.softmax(ml[0], -1))
-            if train:
-                move      = move_dist.sample()
-            else: 
-                move = move_dist.argmax()
+            move      = move_dist.sample() if train else move_dist.probs.argmax()
+
             label_mask = env.valid_label_mask(env.MOVE_SPACE[move.item()])
             ll = label_logits.clone()
-            ll[0, ~label_mask] = -1e9
+            # ll[0, ~label_mask] = -1e9
             label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
-            if train:
-                label = label_dist.sample()
-            else:
-                label = label_dist.argmax()
+            label      = label_dist.sample() if train else label_dist.probs.argmax()
+            move   = env.infere_move_type(label)
+            
+
             move_str  = env.MOVE_SPACE[move]
             label_str = env.LABEL_SPACE[label]
-            
-            reward, done = env.step(move.item(), label.item())
-            
+
+            reward, done = env.step(move, label.item())
+
             if move_str in ("S", "M") and reward == -2.0:
                 n_invalid += 1
 
             new_mv = env.marking_vec()
-
             data['marks'].append(mv.clone())
-            data['moves'].append(move.item())
+            data['moves'].append(move)
             data['labels'].append(label.item())
             data['moves_str'].append(move_str)
             data['labels_str'].append(label_str)
             data['values'].append(value.item())
             data['dones'].append(done)
-
             mv = new_mv
 
             if done:

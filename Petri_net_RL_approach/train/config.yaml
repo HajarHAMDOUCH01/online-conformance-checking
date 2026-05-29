@@ -1,0 +1,78 @@
+# ─────────────────────────────────────────────
+#  Project Configuration
+# ─────────────────────────────────────────────
+
+# ── Shared paths (used across multiple modules) ──
+paths:
+  ds_csv: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\prefix_alignment_dataset.csv"
+  pnml_path: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\pdc2025_000000.pnml"
+  xes_path: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\pdc2025_000000.xes"
+  project_root: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\model\\Petri_net_RL_approach"
+
+# ── Activity key ──
+activity_key: "concept:name"
+
+# ─────────────────────────────────────────────
+#  Module: dataset.py
+# ─────────────────────────────────────────────
+dataset:
+  ds_csv:       ${paths.ds_csv}
+  pnml_path:    ${paths.pnml_path}
+  xes_path:     ${paths.xes_path}
+  activity_key: ${activity_key}
+
+# ─────────────────────────────────────────────
+#  Module: ppo_evaluate.py
+# ─────────────────────────────────────────────
+evaluate:
+  ds_csv:           ${paths.ds_csv}
+  pnml_path:        ${paths.pnml_path}
+  ppo_pt:           "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\ppo_pt.pth"
+  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_out.pth"
+
+# ─────────────────────────────────────────────
+#  Module: ppo_train.py
+# ─────────────────────────────────────────────
+phase2:
+  ds_csv:           ${paths.ds_csv}
+  pnml_path:        ${paths.pnml_path}
+  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_out.pth"
+  ppo_out:          "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\ppo_pt.pth"
+
+  # ── PPO hyper-parameters ──
+  hyperparameters:
+    gamma:      0.99
+    lam:        0.95
+    clip:       0.2
+    ent_coef:   0.01
+    vf_coef:    0.5
+    lr:         3.0e-4
+    max_grad:   0.5
+ 
+  # ── Training schedule ──
+  schedule:
+    ppo_epochs: 5
+    episodes:   5
+    batch_size: 8
+    max_steps:  150
+    k_train:    100
+
+phase1:
+  ds_csv:           ${paths.ds_csv}
+  pnml_path:        ${paths.pnml_path} 
+  model_phase1_checkpoint: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_checkpoint.pth"    
+  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_out.pth"
+
+  # ── Imitation hyper-parameters ──
+  hyperparameters:
+    lr:         3.0e-4
+    max_grad:   0.5
+    w_move:     1.0   # cross-entropy weight for move-type head
+    w_label:    1.0   # cross-entropy weight for activity-label head
+ 
+  # ── Training schedule ──
+  schedule:
+    phase1_epochs: 10
+    batch_size:    8
+    max_steps:     150
+    k_train:       100

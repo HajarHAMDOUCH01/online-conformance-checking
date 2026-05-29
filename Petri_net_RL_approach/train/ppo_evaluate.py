@@ -1,23 +1,58 @@
 import ast
+import sys
+import os
+
 import torch
+import torch.nn as nn
 import pandas as pd
+import numpy as np
 import pm4py
+import yaml
 
-import sys 
-sys.path.append(r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach")
+# ── Load config ───────────────────────────────────────────────────────────────
+_CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 
-from train.ppo_env import AlignmentEnv
+with open(_CFG_PATH, "r") as f:
+    _cfg = yaml.safe_load(f)
+
+_p2    = _cfg["phase2"]
+_hp    = _p2["hyperparameters"]
+_sch   = _p2["schedule"]
+_paths = _cfg["paths"]
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+PROJECT_ROOT     = _paths["project_root"]
+DS_CSV           = _paths["ds_csv"]
+PNML_PATH        = _paths["pnml_path"]
+MODEL_PHASE1_OUT = _p2["model_phase1_out"]   # checkpoint to load 
+PPO_OUT          = _p2["ppo_out"]            
+
+# ── PPO hyper-parameters ──────────────────────────────────────────────────────
+GAMMA    = _hp["gamma"]
+LAM      = _hp["lam"]
+CLIP     = _hp["clip"]
+ENT_COEF = _hp["ent_coef"]
+VF_COEF  = _hp["vf_coef"]
+LR       = _hp["lr"]
+MAX_GRAD = _hp["max_grad"]
+
+# ── Training schedule ─────────────────────────────────────────────────────────
+PPO_EPOCHS = _sch["ppo_epochs"]
+EPISODES   = _sch["episodes"]
+BATCH_SIZE = _sch["batch_size"]
+MAX_STEPS  = _sch["max_steps"]
+K_TRAIN    = _sch["k_train"]
+
+# ── Project path ──────────────────────────────────────────────────────────────
+sys.path.append(PROJECT_ROOT)
+
+from ppo_env import AlignmentEnv
 from model.ppo_model import ActorCritic
+from model.model import Vocab
 
-DS_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\prefix_alignment_dataset_pdc.csv"
-PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\pdc2025_000000.pnml"
-PPO_PT   = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase1.pt"
-# MODEL_PHASE1_OUT = None
-# PPO_PT            = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase_ppo.pt"
-
-N_CASES      = 48
-MAX_PREFIXES = 50
-
+sys.modules['__main__'].Vocab    = Vocab
+sys.modules['model'].Vocab       = Vocab
+sys.modules['model.model'].Vocab = Vocab
 
 def validate_alignment(generated, prefix, env):
 
@@ -65,7 +100,7 @@ def validate_alignment(generated, prefix, env):
 
 def evaluate_case(case_id, case_df, model, vocab, env):
     case_df = case_df.sort_values("prefix_length")
-    rows    = list(case_df.iterrows())[:MAX_PREFIXES]
+    rows    = list(case_df.iterrows())
 
     print("\n" + "=" * 70)
     print(f"CASE {case_id}")
@@ -112,9 +147,9 @@ def evaluate_case(case_id, case_df, model, vocab, env):
 
 K_TRAIN = 100
 def main():
-    ckpt     = torch.load(PPO_PT, map_location="cpu", weights_only=False)
+    ckpt     = torch.load(PPO_OUT, map_location="cpu", weights_only=False)
+    ckpt_phase1 = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
     vocab    = ckpt["vocab"]
-    n_places = ckpt["n_places"]
 
     net, im, fm = pm4py.read_pnml(PNML_PATH)
     labels = [t.label for t in net.transitions if t.label is not None]
@@ -131,8 +166,7 @@ def main():
     df = df[df["case_id"].isin(test_cases)].reset_index(drop=True)
     print(f"testing on {len(test_cases)} cases, {len(df)} rows")
 
-    cases = df["case_id"].unique()[:N_CASES]
-    for case_id in cases:
+    for case_id in test_cases:
         evaluate_case(case_id, df[df["case_id"] == case_id],
                       model, vocab, env)
 

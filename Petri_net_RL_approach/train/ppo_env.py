@@ -65,20 +65,35 @@ class AlignmentEnv:
 
     def is_done(self) -> bool:
         return self.pos >= len(self.prefix)
+    
+    def infere_move_type(self, label):
+        enabled = self._enabled_visible()
+        move_id =  2
+        label_str = self.LABEL_SPACE[label]
+        if label_str is not None:
+            if any(t.label == label_str for t in enabled):
+                move_id =  0
 
+        if len(enabled) > 0:
+            move_id =  1 
+        return move_id
     def valid_move_mask(self) -> torch.Tensor:
         mask = torch.zeros(len(self.MOVE_SPACE), dtype=torch.bool)
 
         if self.is_done():
+            print("done")
             mask[2] = True
             return mask
 
         act     = self.current_activity()
-        enabled = self._enabled_visible()
+
+        enabled = self._enabled_visible() # should be enabled with closure here
 
         mask[2] = True  
 
         if act is not None:
+            # wrong , fix it ; it assumes the only way it will choose S is if two acts in a loop in the model 
+            # S never appears
             if any(t.label == act for t in enabled):
                 mask[0] = True  
 
@@ -98,6 +113,7 @@ class AlignmentEnv:
         if move == "S":
             if act in self.LABEL_SPACE:
                 mask[self.LABEL_SPACE.index(act)] = True
+
 
         elif move == "M":
             """
@@ -148,10 +164,11 @@ class AlignmentEnv:
                     break
 
             if not fired:
+                base_reward += -5.0
                 # This should never happen with masking - indicates a exception
-                raise RuntimeError(f"Invalid {move}-move: label '{label}' not enabled. "
-                                f"Enabled: {[t.label for t in enabled]}. "
-                                f"Current activity: {self.current_activity()}")
+                # raise RuntimeError(f"Invalid {move}-move: label '{label}' not enabled. "
+                #                 f"Enabled: {[t.label for t in enabled]}. "
+                #                 f"Current activity: {self.current_activity()}")
 
             if move == "S":
                 base_reward = +1.0

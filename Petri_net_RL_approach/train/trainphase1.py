@@ -1,213 +1,143 @@
 import ast
+import sys
+import os
+ 
 import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
 import pm4py
-import sys 
-sys.path.append(r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach")
+import yaml
+ 
+# ── Load config ───────────────────────────────────────────────────────────────
+_CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+ 
+with open(_CFG_PATH, "r") as f:
+    _cfg = yaml.safe_load(f)
+ 
+_p1  = _cfg["phase1"]
+_hp  = _p1["hyperparameters"]
+_sch = _p1["schedule"]
+_paths = _cfg["paths"]
 
-from ppo_env import AlignmentEnv
+# paths
+DS_CSV           = _paths["ds_csv"]
+PNML_PATH        = _paths["pnml_path"]
+MODEL_PHASE1_OUT = _p1["model_phase1_out"]
+PROJECT_ROOT     = _paths["project_root"]
+
+# hyper-parameters
+LR       = _hp["lr"]
+MAX_GRAD = _hp["max_grad"]
+W_MOVE   = _hp["w_move"]
+W_LABEL  = _hp["w_label"]
+ 
+# schedule
+PHASE1_EPOCHS = _sch["phase1_epochs"]
+BATCH_SIZE    = _sch["batch_size"]
+MAX_STEPS     = _sch["max_steps"]
+K_TRAIN       = _sch["k_train"]
+ 
+# ── Project path ──────────────────────────────────────────────────────────────
+# sys.path.append(PROJECT_ROOT)
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from train.ppo_env import AlignmentEnv
 from model.ppo_model import ActorCritic
 from model.model import Vocab
-
-sys.modules['__main__'].Vocab = Vocab
-sys.modules['model'].Vocab = Vocab
+ 
+sys.modules['__main__'].Vocab    = Vocab
+sys.modules['model'].Vocab       = Vocab
 sys.modules['model.model'].Vocab = Vocab
 
-DS_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\prefix_alignment_dataset_pdc.csv"
-PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\pdc2025_000000.pnml"
-MODEL_PHASE1_OUT   = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase1.pt"
-PPO_OUT            = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\model_phase_ppo.pt"
 
-GAMMA      = 0.99
-LAM        = 0.95
-CLIP       = 0.2
-ENT_COEF   = 0.01
-VF_COEF    = 0.5
-LR         = 1e-4          
-MAX_GRAD   = 0.5
-PPO_EPOCHS = 2
-EPISODES   = 20
-BATCH_SIZE = 16
-MAX_STEPS  = 150
+def compute_phase1_loss(traj: dict, GT_move_types: list, GT_labels: list,
+                        env, vocab) -> torch.Tensor:
+    """
+    Supervised loss between generated alignment and ground-truth alignment.
 
+    Both move-type and label predictions are treated as multi-class
+    classification → cross-entropy (not BCE).
 
-def collect_episode(model, env, prefix, src_ids, vocab, generated_alignment):
+    Args:
+        traj          : dict returned by model.generate()
+                        must contain 'move_logits' and 'label_logits'
+                        (lists of raw logits tensors, one per step)
+        GT_move_types : list[str]  e.g. ["S", "M", "L", "M"]
+        GT_labels     : list[str]  e.g. ["a", "f", "b", "d"]
+        env           : AlignmentEnv  (owns MOVE_SPACE, LABEL_SPACE)
 
-    if not prefix or not generated_alignment:
-        return None
+    Returns:
+        scalar loss tensor with grad_fn
+    """
+    T = min(len(traj['move_logits']), len(GT_move_types))
+    if T == 0:
+        return torch.tensor(0.0, requires_grad=True)
 
-    data = dict(
-        marks=[], moves=[], labels=[], old_lps=[],
-        rewards=[], values=[], dones=[],
-        src_ids=src_ids, act_ids=[]
-    )
+    # ── Stack logits: shape (T, n_moves) and (T, n_labels) ───────────────────
+    move_logits_stack  = torch.stack(traj['move_logits'][:T],  dim=0)   # (T, |MOVE_SPACE|)
+    label_logits_stack = torch.stack(traj['label_logits'][:T], dim=0)   # (T, |LABEL_SPACE|)
 
-    mv = env.reset(prefix)          
-    h  = model.encode(src_ids)
+    # ── Build integer targets from GT strings ─────────────────────────────────
+    move2idx  = {m: i for i, m in enumerate(env.MOVE_SPACE)}
+    label2idx = {l: i for i, l in enumerate(env.LABEL_SPACE)}
+    move_targets = torch.tensor(
+        [move2idx[m] for m in GT_move_types[:T]], dtype=torch.long
+    )                                                                     # (T,)
+    label_targets = torch.tensor(
+        [label2idx[l] for l in GT_labels[:T]], dtype=torch.long
+    )                                                                     # (T,)
+    
+    # ── Cross-entropy losses ──────────────────────────────────────────────────
+    ce = nn.CrossEntropyLoss()
+    loss_move  = ce(move_logits_stack,  move_targets)   # scalar
+    loss_label = ce(label_logits_stack, label_targets)  # scalar
 
-    for move_str, label_str in zip(generated_alignment['moves_str'], generated_alignment['labels_str']):
+    return W_MOVE * loss_move + W_LABEL * loss_label
 
-        if move_str not in env.MOVE_SPACE:
-            break
-        move_id = env.MOVE_SPACE.index(move_str)
-
-        if label_str not in env.LABEL_SPACE:
-            break
-        label_id = env.LABEL_SPACE.index(label_str)
-
-        act    = env.current_activity()
-        act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
-        data['act_ids'].append(act_id)
-
-        with torch.no_grad():
-            move_logits, label_logits, val, h = model.decode_step(mv, h, act_id)
-
-        move_mask  = env.valid_move_mask()
-        label_mask = env.valid_label_mask(move_str)
-
-        ml = move_logits.clone()
-        ml[0, ~move_mask] = -1e9
-        move_dist = torch.distributions.Categorical(torch.softmax(ml[0], -1))
-
-        ll = label_logits.clone()
-        ll[0, ~label_mask] = -1e9
-        label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
-
-        move_t  = torch.tensor(move_id)
-        label_t = torch.tensor(label_id)
-
-        move_lp  = move_dist.log_prob(move_t)
-        label_lp = label_dist.log_prob(label_t)
-        old_lp   = (move_lp + label_lp).item()
-
-        reward, done = env.step(move_id, label_id)
-        new_mv = env.marking_vec()
-
-        data['marks'].append(mv.clone())
-        data['moves'].append(move_id)
-        data['labels'].append(label_id)
-        data['old_lps'].append(old_lp)
-        data['rewards'].append(float(reward))
-        data['values'].append(val.item())
-        data['dones'].append(done)
-
-        mv = new_mv
-        if done:
-            break
-
-    return data if data['rewards'] else None
-
-
-def compute_gae(rewards, values, dones):
-    T   = len(rewards)
-    adv = [0.0] * T
-    gae = 0.0
-    nv  = 0.0
-    for t in reversed(range(T)):
-        not_done = 0.0 if dones[t] else 1.0
-        delta    = rewards[t] + GAMMA * nv * not_done - values[t]
-        gae      = delta + GAMMA * LAM * not_done * gae
-        adv[t]   = gae
-        nv       = values[t]
-    ret = [a + v for a, v in zip(adv, values)]
-    return adv, ret
-
-
-def ppo_update(model, opt, batch):
-    flat_advs, flat_rets, flat_old = [], [], []
-    for traj in batch:
-        adv, ret = compute_gae(traj['rewards'], traj['values'], traj['dones'])
-        flat_advs.extend(adv)
-        flat_rets.extend(ret)
-        flat_old.extend(traj['old_lps'])
-
-    adv_t = torch.tensor(flat_advs, dtype=torch.float32)
-    ret_t = torch.tensor(flat_rets, dtype=torch.float32)
-    old_t = torch.tensor(flat_old,  dtype=torch.float32)
-    adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
-
-    for _ in range(PPO_EPOCHS):
-        opt.zero_grad()
-        ptr = 0
-        for traj in batch:
-            T        = len(traj['rewards'])
-            traj_adv = adv_t[ptr:ptr+T]
-            traj_ret = ret_t[ptr:ptr+T]
-            traj_old = old_t[ptr:ptr+T]
-            ptr     += T
-
-            h = model.encode(traj['src_ids'])
-            new_lp, new_v = [], []
-
-            for t in range(T):
-                mv     = traj['marks'][t]
-                act_id = traj['act_ids'][t]
-                move_logits, label_logits, val, h = model.decode_step(mv, h, act_id)
-
-                move_dist  = torch.distributions.Categorical(
-                    torch.softmax(move_logits[0],  -1))
-                label_dist = torch.distributions.Categorical(
-                    torch.softmax(label_logits[0], -1))
-
-                move_t  = torch.tensor(traj['moves'][t])
-                label_t = torch.tensor(traj['labels'][t])
-
-                new_lp.append(move_dist.log_prob(move_t) + label_dist.log_prob(label_t))
-                new_v.append(val)
-
-            new_lp = torch.stack(new_lp)
-            new_v  = torch.stack(new_v)
-
-            ratio = torch.exp(new_lp - traj_old.detach())
-            s1 = ratio * traj_adv.detach()
-            s2 = torch.clamp(ratio, 1 - CLIP, 1 + CLIP) * traj_adv.detach()
-
-            actor_loss = -torch.min(s1, s2).mean()
-            value_loss =  0.5 * (new_v - traj_ret.detach()).pow(2).mean()
-            entropy    = -(new_lp).mean()
-
-            loss = (actor_loss + VF_COEF * value_loss + ENT_COEF * entropy) / len(batch)
-            loss.backward()
-
-        nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD)
-        opt.step()
-
-    return loss.item()
-
-K_TRAIN = 100
 
 def main():
+    # ── Data ──────────────────────────────────────────────────────────────────
     df = pd.read_csv(DS_CSV)
     df["prefix_activities"] = df["prefix_activities"].apply(ast.literal_eval)
+    df["step_types"]        = df["step_types"].apply(ast.literal_eval)        
+    df["aligned_prefix"]    = df["aligned_prefix"].apply(ast.literal_eval)    
     df = df[df["aligned_prefix"].notna()]
 
     train_cases = df["case_id"].unique()[:K_TRAIN]
     df = df[df["case_id"].isin(train_cases)].reset_index(drop=True)
-    print(f"Training on {len(train_cases)} cases, {len(df)} rows")
+    print(f"Training phase 1 on {len(train_cases)} cases, {len(df)} rows")
 
+    # ── Environment & vocabulary ───────────────────────────────────────────────
     net, im, fm = pm4py.read_pnml(PNML_PATH)
-    labels = [t.label for t in net.transitions if t.label is not None]
-    env    = AlignmentEnv(net, im, labels)
+    labels      = [t.label for t in net.transitions if t.label is not None]
+    env         = AlignmentEnv(net, im, labels)
 
-    # ckpt  = torch.load(MODEL_PT, map_location='cpu', weights_only=False)
-    # vocab = ckpt["vocab"]
     vocab = Vocab()
     for label in env.LABEL_SPACE:
         vocab.add(label)
 
+    # ── Model ─────────────────────────────────────────────────────────────────
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
 
-    opt   = torch.optim.Adam(model.parameters(), lr=LR)
-    cases = df['case_id'].unique()
+    if MODEL_PHASE1_OUT is not None and os.path.exists(MODEL_PHASE1_OUT):
+        ckpt = torch.load(MODEL_PHASE1_OUT, map_location='cpu', weights_only=False)
+        model.load_state_dict(ckpt['state'], strict=True)
+        print("Loaded Phase 1 checkpoint.")
 
-    for ep in range(EPISODES):
+    opt    = torch.optim.Adam(model.parameters(), lr=LR)
+    cases = df["case_id"].unique().to_numpy()
+
+    # ── Training loop ─────────────────────────────────────────────────────────
+    for ep in range(PHASE1_EPOCHS):
         np.random.shuffle(cases)
-        batch      = []
-        total_loss = 0.0
-        n_updates  = 0
-        skipped    = 0
+
+        batch_trajs   = []   # accumulated trajectories
+        batch_gt_move = []   # matching GT move-type lists
+        batch_gt_lbl  = []   # matching GT label lists
+        total_loss    = 0.0
+        n_updates     = 0
+        skipped       = 0
 
         for cid in cases:
             case_df = df[df['case_id'] == cid].sort_values('prefix_length')
@@ -217,50 +147,59 @@ def main():
                 if not prefix:
                     continue
 
-                src = torch.tensor([vocab.encode(prefix)])
+                src               = torch.tensor([vocab.encode(prefix)])
+                GT_move_types     = row['step_types']        # list[str] e.g. ["S","M",…]
+                GT_activity_labels = row['aligned_prefix']   # list[str] e.g. ["a","b",…]
 
-                model.eval()
-                #here generate is called with torch.no_grad()
-                with torch.no_grad():
-                    generated, n_invalid = model.generate(
-                        src, prefix, env, vocab, max_len=MAX_STEPS
-                    )
-                model.train()
-
-                if not generated:
+                traj, n_invalid = model.generate(
+                    src, prefix, env, vocab, max_len=MAX_STEPS
+                )
+                if not traj or 'move_logits' not in traj:
                     skipped += 1
                     continue
-                # here traj data is given by collect_episode function
-                traj = collect_episode(
-                    model, env, prefix, src, vocab,
-                    generated_alignment=generated
-                )
 
-                if traj:
-                    batch.append(traj)
+                batch_trajs.append(traj)
+                batch_gt_move.append(GT_move_types)
+                batch_gt_lbl.append(GT_activity_labels)
 
-                if len(batch) >= BATCH_SIZE:
-                    l = ppo_update(model, opt, batch)
-                    total_loss += l
-                    n_updates  += 1
-                    batch       = []
+                # ── Gradient step when batch is full ──────────────────────────
+                if len(batch_trajs) >= BATCH_SIZE:
+                    opt.zero_grad()
+                    loss = torch.stack([
+                        compute_phase1_loss(t, gm, gl, env, vocab)
+                        for t, gm, gl in zip(batch_trajs, batch_gt_move, batch_gt_lbl)
+                    ]).mean()
 
-        if batch:
-            l = ppo_update(model, opt, batch)
-            total_loss += l
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+                    opt.step()
+
+                    total_loss  += loss.item()
+                    n_updates   += 1
+                    batch_trajs  = []
+                    batch_gt_move = []
+                    batch_gt_lbl  = []
+
+        # ── Flush remaining partial batch ─────────────────────────────────────
+        if batch_trajs:
+            opt.zero_grad()
+            loss = torch.stack([
+                compute_phase1_loss(t, gm, gl, env, vocab)
+                for t, gm, gl in zip(batch_trajs, batch_gt_move, batch_gt_lbl)
+            ]).mean()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+            opt.step()
+            total_loss += loss.item()
             n_updates  += 1
 
         avg_loss = total_loss / max(n_updates, 1)
-        print(f"Episode {ep+1}/{EPISODES}  avg_loss={avg_loss:.4f}  "
+        print(f"Epoch {ep+1}/{PHASE1_EPOCHS}  avg_loss={avg_loss:.4f}  "
               f"updates={n_updates}  skipped={skipped}")
 
-    torch.save({
-        "state"   : model.state_dict(),
-        "vocab"   : vocab,
-        "n_places": env.n_places,
-        "n_labels": len(env.LABEL_SPACE),
-    }, MODEL_PHASE1_OUT)
-    print(f"Saved → {MODEL_PHASE1_OUT}")
+    # ── Save ──────────────────────────────────────────────────────────────────
+    torch.save({'state': model.state_dict()}, MODEL_PHASE1_OUT)
+    print(f"Phase 1 model saved -> {MODEL_PHASE1_OUT}")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

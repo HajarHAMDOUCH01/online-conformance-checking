@@ -6,8 +6,8 @@ import pm4py
 from pm4py.objects.petri_net.obj import PetriNet
 from pm4py.objects.log.importer.xes import importer as xes_importer
 
-OUT_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\prefix_alignment_dataset_pdc.csv"
-PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\pdc2025_000000.pnml"
+DS_CSV             = r""
+PNML_PATH          = r""
 XES_PATH           = None
 ACTIVITY_KEY = "concept:name"
 
@@ -168,54 +168,54 @@ print("\n" + "=" * 70)
 print("STEP 6 — Dataset generation")
 print("=" * 70)
 
-os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
-write_header   = not os.path.exists(OUT_CSV)
+os.makedirs(os.path.dirname(DS_CSV), exist_ok=True)
+write_header   = not os.path.exists(DS_CSV)
 t_start        = time.time()
 total_prefixes = 0
 errors         = 0
-# for idx, trace in enumerate(neg_traces):
-#     case_id    = str(trace.attributes.get("concept:name", f"case_{idx}"))
-#     activities = [str(ev["category"]) for ev in trace]
-#     rows       = []
+for idx, trace in enumerate(neg_traces):
+    case_id    = str(trace.attributes.get("concept:name", f"case_{idx}"))
+    activities = [str(ev["category"]) for ev in trace]
+    rows       = []
 
-#     for k in range(1, len(activities) + 1, 2):
-#         result = align_prefix(activities[:k])   # fresh each time, no state passed
+    for k in range(1, len(activities) + 1, 2):
+        result = align_prefix(activities[:k])   # fresh each time, no state passed
 
-#         if result.get("error"):
-#             errors += 1
+        if result.get("error"):
+            errors += 1
 
-#         rows.append({
-#             "case_id":           case_id,
-#             "prefix_length":     k,
-#             "prefix_activities": str(activities[:k]),
-#             "aligned_prefix":    str(result.get("aligned_prefix")),
-#             "step_types":        str(result.get("step_types")),
-#             "cost":              result.get("cost"),
-#             "sync_moves":        result.get("sync_moves"),
-#             "log_moves":         result.get("log_moves"),
-#             "model_moves":       result.get("model_moves"),
-#             "is_conforming":     result.get("is_conforming"),
-#             "error":             result.get("error"),
-#         })
+        rows.append({
+            "case_id":           case_id,
+            "prefix_length":     k,
+            "prefix_activities": str(activities[:k]),
+            "aligned_prefix":    str(result.get("aligned_prefix")),
+            "step_types":        str(result.get("step_types")),
+            "cost":              result.get("cost"),
+            "sync_moves":        result.get("sync_moves"),
+            "log_moves":         result.get("log_moves"),
+            "model_moves":       result.get("model_moves"),
+            "is_conforming":     result.get("is_conforming"),
+            "error":             result.get("error"),
+        })
 
 
-#     pd.DataFrame(rows).to_csv(
-#         OUT_CSV, mode="a", header=write_header, index=False
-#     )
-#     write_header    = False
-#     total_prefixes += len(rows)
+    pd.DataFrame(rows).to_csv(
+        DS_CSV, mode="a", header=write_header, index=False
+    )
+    write_header    = False
+    total_prefixes += len(rows)
 
-#     elapsed = time.time() - t_start
-#     avg_s   = elapsed / (idx + 1)
-#     eta_s   = avg_s * (len(neg_traces) - idx - 1)
+    elapsed = time.time() - t_start
+    avg_s   = elapsed / (idx + 1)
+    eta_s   = avg_s * (len(neg_traces) - idx - 1)
 
-#     if (idx + 1) % 50 == 0 or idx == 0:
-#         print(
-#             f"  [{idx+1:4d}/{len(neg_traces)}]  "
-#             f"case={case_id!r}  prefixes={len(rows)}  "
-#             f"elapsed={elapsed:.1f}s  ETA={eta_s:.0f}s  "
-#             f"errors={errors}"
-#         )
+    if (idx + 1) % 50 == 0 or idx == 0:
+        print(
+            f"  [{idx+1:4d}/{len(neg_traces)}]  "
+            f"case={case_id!r}  prefixes={len(rows)}  "
+            f"elapsed={elapsed:.1f}s  ETA={eta_s:.0f}s  "
+            f"errors={errors}"
+        )
 
-# print(f"\nDone. Total prefixes: {total_prefixes}  Errors: {errors}")
-# print(f"Saved → {OUT_CSV}")
+print(f"\nDone. Total prefixes: {total_prefixes}  Errors: {errors}")
+print(f"Saved → {DS_CSV}")
