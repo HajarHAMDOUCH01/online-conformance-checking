@@ -13,7 +13,6 @@ LOOKAHEAD_LAMBDA = 0.5
 
 _dijkstra_counter = itertools.count()
 
-
 class AlignmentEnv:
     def __init__(self, net, im, labels: list[str]):
         self.net = net
@@ -67,70 +66,21 @@ class AlignmentEnv:
         return self.pos >= len(self.prefix)
     
     def infere_move_type(self, label):
+        act     = self.current_activity()
         enabled = self._enabled_visible()
-        move_id =  2
         label_str = self.LABEL_SPACE[label]
         if label_str is not None:
-            if any(t.label == label_str for t in enabled):
-                move_id =  0
-
-        if len(enabled) > 0:
-            move_id =  1 
+            if (label_str in enabled):
+                move_id = 1
+                if any(t == act for t in enabled):
+                    move_id =  0
+            else: 
+                move_id = 2
         return move_id
-    def valid_move_mask(self) -> torch.Tensor:
-        mask = torch.zeros(len(self.MOVE_SPACE), dtype=torch.bool)
 
-        if self.is_done():
-            print("done")
-            mask[2] = True
-            return mask
-
-        act     = self.current_activity()
-
-        enabled = self._enabled_visible() # should be enabled with closure here
-
-        mask[2] = True  
-
-        if act is not None:
-            # wrong , fix it ; it assumes the only way it will choose S is if two acts in a loop in the model 
-            # S never appears
-            if any(t.label == act for t in enabled):
-                mask[0] = True  
-
-        if len(enabled) > 0:
-            mask[1] = True  
-
-        return mask
-
-    def valid_label_mask(self, move: str) -> torch.Tensor:
-        mask    = torch.zeros(len(self.LABEL_SPACE), dtype=torch.bool)
-        act     = self.current_activity()
+    def valid_label_mask(self) -> torch.Tensor:
         enabled = self._enabled_visible()
-
-        if act is None:
-            return mask
-
-        if move == "S":
-            if act in self.LABEL_SPACE:
-                mask[self.LABEL_SPACE.index(act)] = True
-
-
-        elif move == "M":
-            """
-            For M move: 
-            True for all labels that correspond 
-            to currently enabled visible transitions. 
-            The model can fire any enabled activity, 
-            regardless of what the trace shows."""
-            enabled_labels = {t.label for t in enabled if t.label is not None}
-            for i, l in enumerate(self.LABEL_SPACE):
-                if l in enabled_labels:
-                    mask[i] = True
-
-        elif move == "L":
-            if act in self.LABEL_SPACE:
-                mask[self.LABEL_SPACE.index(act)] = True
-
+        mask = torch.tensor([label in enabled for label in self.LABEL_SPACE], dtype=torch.bool)
         return mask
 
     def _intermediate_prefix(self) -> list[str]:
@@ -143,12 +93,8 @@ class AlignmentEnv:
         if self.is_done():
             return 0.0, True
 
-        # marking_before = self._pm4py_marking_to_name_dict(self.marking)
-        # prefix_before  = self._intermediate_prefix()
-        # c_before = self._dijkstra_remaining_cost(marking_before, prefix_before)
-
         act     = self.current_activity()
-        enabled = self._enabled_visible()
+        enabled = self.real_enabled_visible()
         base_reward = 0.0
 
         if move == "L":
@@ -159,16 +105,11 @@ class AlignmentEnv:
             fired = False
             for t in enabled:
                 if t.label == label:
+                    # may not be deterministic if multiple transitions share the same label => to dooo. 
                     self.marking = self.sem.weak_execute(t, self.net, self.marking)
                     fired = True
-                    break
-
-            if not fired:
-                base_reward += -5.0
-                # This should never happen with masking - indicates a exception
-                # raise RuntimeError(f"Invalid {move}-move: label '{label}' not enabled. "
-                #                 f"Enabled: {[t.label for t in enabled]}. "
-                #                 f"Current activity: {self.current_activity()}")
+                    break     
+            # print(f"Current activity: {self.current_activity()}")
 
             if move == "S":
                 base_reward = +1.0
@@ -179,75 +120,9 @@ class AlignmentEnv:
 
         else:
             base_reward = -1.0
-
-        # self._tau_closure()
-
-        # marking_after = self._pm4py_marking_to_name_dict(self.marking)
-        # prefix_after  = self._intermediate_prefix()
-        # c_after = self._dijkstra_remaining_cost(marking_after, prefix_after)
-
-        # shaping      = LOOKAHEAD_LAMBDA * (c_before - c_after)
         total_reward = base_reward 
 
         return total_reward, self.is_done()
-
-    def _dijkstra_remaining_cost(
-        self,
-        start_marking_dict: dict,
-        remaining_prefix: list,
-    ) -> float:
-        if not remaining_prefix:
-            return 0.0
-
-        goal_pos   = len(remaining_prefix)
-        start_tup  = tuple(sorted(
-            (p, c) for p, c in start_marking_dict.items() if c > 0
-        ))
-        init_state = (start_tup, 0)
-
-        dist  = {init_state: 0}
-        heap  = [(0, next(_dijkstra_counter), start_tup, 0)]
-
-        while heap:
-            cost, _, m_tup, pos = heapq.heappop(heap)
-            state = (m_tup, pos)
-
-            if cost > dist.get(state, float('inf')):
-                continue
-
-            if pos == goal_pos:
-                # print("\n dijkstra remaining cost = ", cost)
-                return float(cost)
-
-            act    = remaining_prefix[pos]
-            m_dict = dict(m_tup)
-
-            def _push(new_m_dict, new_pos, new_cost, _s=state):
-                new_tup = tuple(sorted(
-                    (p, c) for p, c in new_m_dict.items() if c > 0
-                ))
-                ns = (new_tup, new_pos)
-                if new_cost < dist.get(ns, float('inf')):
-                    dist[ns] = new_cost
-                    heapq.heappush(
-                        heap, (new_cost, next(_dijkstra_counter), new_tup, new_pos)
-                    )
-
-            # for reachable_m in self._tau_closure_dict(m_dict):
-            reachable_markings = self._tau_closure_dict(m_dict)
-            reachable_m = random.choice(reachable_markings)
-            # sync
-            for t in self._label_to_trans.get(act, []):
-                if self._dijk_enabled(reachable_m, t):
-                    _push(self._dijk_fire(reachable_m, t), pos + 1, cost)
-            # model
-            for t in self._visible_transitions:
-                if self._dijk_enabled(reachable_m, t):
-                    _push(self._dijk_fire(reachable_m, t), pos, cost + 1)
-            # log
-            _push(reachable_m, pos + 1, cost + 1)
-        
-        return float('inf')
 
     def _dijk_enabled(self, m_dict: dict, transition) -> bool:
         return all(
@@ -270,36 +145,14 @@ class AlignmentEnv:
 
     def _enabled_visible(self):
         return [
+            t.label for t in self.sem.enabled_transitions(self.net, self.marking)
+            if t.label is not None
+        ]
+    
+    def real_enabled_visible(self):
+        return [
             t for t in self.sem.enabled_transitions(self.net, self.marking)
             if t.label is not None
         ]
 
-    def _tau_closure(self):
-        changed = True
-        safety  = 0
-        while changed and safety < 200:
-            changed = False
-            safety += 1
-            for t in self.sem.enabled_transitions(self.net, self.marking):
-                if t.label is None:
-                    self.marking = self.sem.weak_execute(t, self.net, self.marking) # this keeps the alst obtained marking 
-                    changed = True
-                    break
-
-    def _tau_closure_dict(self, m_dict: dict) -> list[dict]:
-        """Return all markings reachable via silent transitions from m_dict."""
-        visited = set()
-        queue   = [m_dict]
-        result  = []
-
-        while queue:
-            cur = queue.pop()
-            key = tuple(sorted(cur.items()))
-            if key in visited:
-                continue
-            visited.add(key)
-            result.append(cur)
-            for t in self._silent_transitions:
-                if self._dijk_enabled(cur, t):
-                    queue.append(self._dijk_fire(cur, t))
-        return result
+# to dooo => tau function

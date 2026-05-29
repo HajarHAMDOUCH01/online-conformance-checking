@@ -54,76 +54,6 @@ sys.modules['__main__'].Vocab    = Vocab
 sys.modules['model'].Vocab       = Vocab
 sys.modules['model.model'].Vocab = Vocab
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Episode collection
-# ─────────────────────────────────────────────────────────────────────────────
-
-def collect_episode(model, env, prefix, src_ids, vocab, generated_alignment):
-    if not prefix or not generated_alignment:
-        return None
-
-    data = dict(
-        marks=[], moves=[], labels=[], old_lps=[], moves_str=[], labels_str=[],
-        rewards=[], values=[], dones=[],
-        src_ids=src_ids, act_ids=[]
-    )
-
-    mv = env.reset(prefix)
-    h  = model.encode(src_ids)
-
-    for move_str, label_str in zip(generated_alignment['moves_str'],
-                                   generated_alignment['labels_str']):
-        if move_str not in env.MOVE_SPACE:
-            break
-        move_id = env.MOVE_SPACE.index(move_str)
-
-        if label_str not in env.LABEL_SPACE:
-            break
-        label_id = env.LABEL_SPACE.index(label_str)
-
-        act    = env.current_activity()
-        act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
-        data['act_ids'].append(act_id)
-
-        with torch.no_grad():
-            move_logits, label_logits, val, h = model.decode_step(mv, h, act_id)
-
-        move_mask  = env.valid_move_mask()
-        label_mask = env.valid_label_mask(move_str)
-
-        ml = move_logits.clone()
-        ml[0, ~move_mask] = -1e9
-        move_dist = torch.distributions.Categorical(torch.softmax(ml[0], -1))
-
-        ll = label_logits.clone()
-        ll[0, ~label_mask] = -1e9
-        label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
-
-        move_lp  = move_dist.log_prob(torch.tensor(move_id))
-        label_lp = label_dist.log_prob(torch.tensor(label_id))
-        old_lp   = (move_lp + label_lp).item()
-
-        reward, done = env.step(move_id, label_id)
-        new_mv = env.marking_vec()
-
-        data['marks'].append(mv.clone())
-        data['moves'].append(move_id)
-        data['labels'].append(label_id)
-        data['moves_str'].append(move_str)
-        data['labels_str'].append(label_str)
-        data['old_lps'].append(old_lp)
-        data['rewards'].append(float(reward))
-        data['values'].append(val.item())
-        data['dones'].append(done)
-
-        mv = new_mv
-        if done:
-            break
-
-    return data if data['rewards'] else None
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  GAE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,11 +90,10 @@ def ppo_update(model, opt, batch):
     old_t = torch.tensor(flat_old,  dtype=torch.float32)
     adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
 
-    loss = torch.tensor(0.0)   
-
     for _ in range(PPO_EPOCHS):
         opt.zero_grad()
-        ptr = 0
+        ptr        = 0
+        epoch_loss = torch.tensor(0.0)          # accumulate as a sum, not overwrite
 
         for traj in batch:
             T        = len(traj['rewards'])
@@ -180,17 +109,12 @@ def ppo_update(model, opt, batch):
             for t in range(T):
                 mv     = traj['marks'][t]
                 act_id = traj['act_ids'][t]
-                move_logits, label_logits, val, h = model.decode_step(mv, h, act_id)
+                label_logits, val, h = model.decode_step(mv, h, act_id)
 
-                move_dist  = torch.distributions.Categorical(
-                    torch.softmax(move_logits[0],  -1))
                 label_dist = torch.distributions.Categorical(
                     torch.softmax(label_logits[0], -1))
 
-                new_lp.append(
-                    move_dist.log_prob(torch.tensor(traj['moves'][t])) +
-                    label_dist.log_prob(torch.tensor(traj['labels'][t]))
-                )
+                new_lp.append(label_dist.log_prob(torch.tensor(traj['labels'][t])))
                 new_v.append(val)
 
             new_lp = torch.stack(new_lp)
@@ -204,13 +128,14 @@ def ppo_update(model, opt, batch):
             value_loss =  0.5 * (new_v - traj_ret.detach()).pow(2).mean()
             entropy    = -new_lp.mean()
 
-            loss = (actor_loss + VF_COEF * value_loss + ENT_COEF * entropy) / len(batch)
-            loss.backward()
+            traj_loss   = (actor_loss + VF_COEF * value_loss + ENT_COEF * entropy) / len(batch)
+            epoch_loss  = epoch_loss + traj_loss   # accumulate, don't call backward yet
 
+        epoch_loss.backward()                      # one backward per epoch over full batch
         nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD)
         opt.step()
 
-    return loss.item()
+    return epoch_loss.item()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -241,12 +166,12 @@ def main():
     # ── Model — load Phase 1 weights ──────────────────────────────────────────
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
 
-    if MODEL_PHASE1_OUT and os.path.exists(MODEL_PHASE1_OUT):
-        ckpt = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
-        model.load_state_dict(ckpt["state"], strict=True)
-        print(f"Loaded Phase 1 weights from {MODEL_PHASE1_OUT}")
-    else:
-        print("Warning: no Phase 1 checkpoint found — training from scratch.")
+    # if MODEL_PHASE1_OUT and os.path.exists(MODEL_PHASE1_OUT):
+    #     ckpt = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
+    #     model.load_state_dict(ckpt["state"], strict=True)
+    #     print(f"Loaded Phase 1 weights from {MODEL_PHASE1_OUT}")
+    # else:
+    #     print("Warning: no Phase 1 checkpoint found — training from scratch.")
 
     opt = torch.optim.Adam(model.parameters(), lr=LR)
 
@@ -266,33 +191,36 @@ def main():
             n_updates  += 1
             batch.clear()
 
-        for cid in cases:
+        for idx, cid in enumerate(cases):
             case_df = df[df["case_id"] == cid].sort_values("prefix_length")
 
             for _, row in case_df.iterrows():
                 prefix = row["prefix_activities"]
+                GT_activity_labels = row['aligned_prefix'] 
+                GT_move_types     = row['step_types']
                 if not prefix:
                     continue
 
                 src = torch.tensor([vocab.encode(prefix)])
 
                 model.eval()
+                if idx % 10 == 0:
+                    print("prefix :", prefix)
+                    print("gt labels : ", GT_activity_labels)
+                    print("gt move_types : ", GT_move_types)
                 with torch.no_grad():
-                    generated, n_invalid = model.generate(
-                        src, prefix, env, vocab, max_len=MAX_STEPS
-                    )
+                    traj, n_invalid = model.generate(src, prefix, env, vocab, max_len=MAX_STEPS)
                 model.train()
 
-                if not generated:
+                if traj and traj['rewards']:  
+                    batch.append(traj)
+                if not traj:
                     skipped += 1
                     continue
-
-                traj = collect_episode(
-                    model, env, prefix, src, vocab,
-                    generated_alignment=generated
-                )
-                if traj:
-                    batch.append(traj)
+                if idx % 10 == 0:
+                    print("generated labels :", traj["labels_str"])
+                    print("corresponding move types :", traj["moves_str"])
+                    print()
 
                 if len(batch) >= BATCH_SIZE:
                     _flush_batch()

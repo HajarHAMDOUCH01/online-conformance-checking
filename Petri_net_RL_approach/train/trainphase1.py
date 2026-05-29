@@ -120,10 +120,10 @@ def main():
     # ── Model ─────────────────────────────────────────────────────────────────
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
 
-    if MODEL_PHASE1_OUT is not None and os.path.exists(MODEL_PHASE1_OUT):
-        ckpt = torch.load(MODEL_PHASE1_OUT, map_location='cpu', weights_only=False)
-        model.load_state_dict(ckpt['state'], strict=True)
-        print("Loaded Phase 1 checkpoint.")
+    # if MODEL_PHASE1_OUT is not None and os.path.exists(MODEL_PHASE1_OUT):
+    #     ckpt = torch.load(MODEL_PHASE1_OUT, map_location='cpu', weights_only=False)
+    #     model.load_state_dict(ckpt['state'], strict=True)
+    #     print("Loaded Phase 1 checkpoint.")
 
     opt    = torch.optim.Adam(model.parameters(), lr=LR)
     cases = df["case_id"].unique().to_numpy()
@@ -139,7 +139,7 @@ def main():
         n_updates     = 0
         skipped       = 0
 
-        for cid in cases:
+        for idx, cid in enumerate(cases):
             case_df = df[df['case_id'] == cid].sort_values('prefix_length')
 
             for _, row in case_df.iterrows():
@@ -154,6 +154,10 @@ def main():
                 traj, n_invalid = model.generate(
                     src, prefix, env, vocab, max_len=MAX_STEPS
                 )
+                if idx % 5 ==0 :
+                    print()
+                    print("generted labels : ", traj['labels_str'])
+                    print("gt labels : ", GT_activity_labels)
                 if not traj or 'move_logits' not in traj:
                     skipped += 1
                     continue
@@ -169,7 +173,7 @@ def main():
                         compute_phase1_loss(t, gm, gl, env, vocab)
                         for t, gm, gl in zip(batch_trajs, batch_gt_move, batch_gt_lbl)
                     ]).mean()
-
+                    print("\nbatch loss :", loss)
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
                     opt.step()

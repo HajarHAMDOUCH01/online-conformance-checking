@@ -64,7 +64,7 @@ def validate_alignment(generated, prefix, env):
     sync_moves = 0
 
     for move, label in zip(generated['moves_str'], generated['labels_str']):
-        enabled_labels = {t.label for t in env._enabled_visible()}
+        enabled_labels = {t.label for t in env.real_enabled_visible()}
 
         if move == "S":
             act = env.current_activity()
@@ -148,7 +148,7 @@ def evaluate_case(case_id, case_df, model, vocab, env):
 K_TRAIN = 100
 def main():
     ckpt     = torch.load(PPO_OUT, map_location="cpu", weights_only=False)
-    ckpt_phase1 = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
+    # ckpt_phase1 = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
     vocab    = ckpt["vocab"]
 
     net, im, fm = pm4py.read_pnml(PNML_PATH)
