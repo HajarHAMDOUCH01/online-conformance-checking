@@ -135,13 +135,13 @@ def main():
                     traj, n_invalid = model.generate(
                         src, prefix, env, vocab, max_len=MAX_STEPS
                     )
-                    if idx % 25 == 0 and len(prefix) > 7:
-                        print()
-                        print("prefix    :", prefix)
-                        print("gen labels:", traj['labels_str'])
-                        print("gen moves :", traj['moves_str'])
-                        print("gt labels :", GT_activity_labels)
-                        print("gt move   :", GT_move_types)
+                    # if idx % 25 == 0 and len(prefix) > 7:
+                        # print()
+                        # print("prefix    :", prefix)
+                        # print("gen labels:", traj['labels_str'])
+                        # print("gen moves :", traj['moves_str'])
+                        # print("gt labels :", GT_activity_labels)
+                        # print("gt move   :", GT_move_types)
 
                     if not traj or not traj['label_logits']:
                         skipped += 1
