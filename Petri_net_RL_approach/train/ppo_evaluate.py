@@ -148,7 +148,7 @@ def evaluate_case(case_id, case_df, model, vocab, env):
 K_TRAIN = 100
 def main():
     ckpt     = torch.load(PPO_OUT, map_location="cpu", weights_only=False)
-    # ckpt_phase1 = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
+    ckpt_phase1 = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
     vocab    = ckpt["vocab"]
 
     net, im, fm = pm4py.read_pnml(PNML_PATH)

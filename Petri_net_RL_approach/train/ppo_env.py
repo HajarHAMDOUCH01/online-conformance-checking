@@ -20,9 +20,12 @@ class AlignmentEnv:
         self.sem = ClassicSemantics()
 
         self.MOVE_SPACE  = ["S", "M", "L"]
-        self.MOVE_ID_SPACE = {move: i for i, move in enumerate(self.MOVE_SPACE)}
-        self.ID_MOVE_SPACE = {i: move for i, move in enumerate(self.MOVE_SPACE)}
         self.LABEL_SPACE = list(labels)
+        self.MOVE_ID_SPACE = {move: i for i, move in enumerate(self.MOVE_SPACE)}
+        self.ID_LABEL_SPACE = {i: label for i, label in enumerate(self.LABEL_SPACE)}
+        self.LABEL_ID_SPACE = {label: i for i, label in enumerate(self.LABEL_SPACE)}
+        self.ID_MOVE_SPACE = {i: move for i, move in enumerate(self.MOVE_SPACE)}
+        
 
         self.place_list = sorted(net.places, key=lambda p: p.name)
         self.place_idx  = {p: i for i, p in enumerate(self.place_list)}
@@ -64,66 +67,104 @@ class AlignmentEnv:
 
     def is_done(self) -> bool:
         return self.pos >= len(self.prefix)
-    
-    def infere_move_type(self, label):
-        act     = self.current_activity()
+
+    def infere_move_type(self, label, position):
         enabled = self._enabled_visible()
         label_str = self.LABEL_SPACE[label]
-        if label_str is not None:
-            if (label_str in enabled):
-                move_id = 1
-                if any(t == act for t in enabled):
-                    move_id =  0
-            else: 
-                move_id = 2
-        return move_id
+        act = self.current_activity()  # prefix[self.pos]
+        next_act = self.prefix[self.pos + 1] if (self.pos + 1) < len(self.prefix) else act
+
+        # check current pos first, then next
+        if label_str == act and label_str in enabled:
+            return 0  # S
+        elif label_str == act and label_str not in enabled:
+            return 2  # L
+        else:
+            return 1  # M : label in enabled but != act
 
     def valid_label_mask(self) -> torch.Tensor:
         enabled = self._enabled_visible()
-        mask = torch.tensor([label in enabled for label in self.LABEL_SPACE], dtype=torch.bool)
+        act = self.current_activity()
+        mask = torch.tensor(
+            [label in enabled or label == act for label in self.LABEL_SPACE],
+            dtype=torch.bool
+        )
         return mask
-
-    def _intermediate_prefix(self) -> list[str]:
-        return self._inserted_model_moves + self.prefix[self.pos:]
-
-    def step(self, move_id: int, label_id: int) -> tuple[float, bool]:
+    
+    def step(self, model, move_id: int, label_id: int, prev_moves, prev_labels, labels_logits, attn_weights, moves_for_all_labels):
+        """
+        before reward design : 
+            1. checks prefix 
+            2. applies this masks
+                L => label = act 
+                M => label = any(enabled)
+                S => label = any(enabled == act)
+            3. one reward per move type (S -> +1 ; M or L -> -1)
+            4. PPO learns reward of the whole path and minimizes the cost of the alignment
+        efter reward design :
+            1. predict a label randomly 
+            2. infere its move type based on the generated alignement 
+            3. depending on predicted activity move type :
+                reaward = attendance_to_the_prefix + exploration_rate + alpha / beta / gamma * label's logit
+                * attendance_to_the_prefix applies attention mechanism to the priginal prefix up to current pos 
+                * exploration rate uses M labels logits 
+        """
         move  = self.MOVE_SPACE[move_id]
         label = self.LABEL_SPACE[label_id]
 
         if self.is_done():
-            return 0.0, True
-
+            return label, move, 0.0, True
         act     = self.current_activity()
         enabled = self.real_enabled_visible()
-        base_reward = 0.0
-
+        enabled_str = self._enabled_visible()
+        total_reward = 0.0 
+        if move == "S":
+            self.pos += 1   
         if move == "L":
-            base_reward = -1.0
             self.pos += 1
+        if move in ("S", "M"):
 
-        elif move in ("S", "M"):
             fired = False
             for t in enabled:
                 if t.label == label:
-                    # may not be deterministic if multiple transitions share the same label => to dooo. 
+                    # to do : fix : may not be deterministic if multiple transitions share the same label => to dooo. 
                     self.marking = self.sem.weak_execute(t, self.net, self.marking)
                     fired = True
-                    break     
-            # print(f"Current activity: {self.current_activity()}")
+                    break 
+        # new state :
+            # state includes : prefix and its current position (note we can do marking for prefix too , but it's not used in this environement modelization)
+            # state includes : generated alignment and its marking 
+        prev_moves.append(move)
+        prev_labels.append(label)
+        new_moves  = prev_moves
+        new_labels = prev_labels
+        total_reward = self.reward_function(new_moves, new_labels, labels_logits, attn_weights, moves_for_all_labels)
+        return new_labels[-1], new_moves[-1], total_reward, self.is_done()
 
-            if move == "S":
-                base_reward = +1.0
-                self.pos += 1
-            elif move == "M":
-                base_reward = -1.0
-                self._inserted_model_moves.append(label)
+    def reward_function(self, new_moves, new_labels, labels_logits, attention_weights_to_prefix, moves_for_all_labels):
+        alpha = 0.3
+        beta  = 0.3
+        gamma = 0.3
+        move  = new_moves[-1]
+        label = new_labels[-1]
 
-        else:
-            base_reward = -1.0
-        total_reward = base_reward 
+        label_id    = self.LABEL_SPACE.index(label)
+        label_logit = torch.sigmoid(labels_logits[label_id]).item()
 
-        return total_reward, self.is_done()
+        model_moves_labels_logits = [
+            labels_logits[i] for i, mt in enumerate(moves_for_all_labels) if mt == 2
+        ]
+        ratio_of_high_model_moves_labels_logits = (
+            len([l for l in model_moves_labels_logits if l.item() > 0.5]) / len(labels_logits)
+        ) if len(labels_logits) > 0 else 0.0
 
+        did_you_attend = alpha * attention_weights_to_prefix.max().item()
+        did_you_explore = beta  * ratio_of_high_model_moves_labels_logits
+        label_reward    = gamma * label_logit
+
+        reward = did_you_attend + did_you_explore + label_reward
+        return reward
+    
     def _dijk_enabled(self, m_dict: dict, transition) -> bool:
         return all(
             m_dict.get(pname, 0) >= w
@@ -155,4 +196,4 @@ class AlignmentEnv:
             if t.label is not None
         ]
 
-# to dooo => tau function
+# to do => tau function for handling silent transitions

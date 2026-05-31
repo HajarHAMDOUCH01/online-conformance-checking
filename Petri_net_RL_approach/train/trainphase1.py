@@ -29,7 +29,6 @@ PROJECT_ROOT     = _paths["project_root"]
 # hyper-parameters
 LR       = _hp["lr"]
 MAX_GRAD = _hp["max_grad"]
-W_MOVE   = _hp["w_move"]
 W_LABEL  = _hp["w_label"]
  
 # schedule
@@ -50,50 +49,33 @@ sys.modules['__main__'].Vocab    = Vocab
 sys.modules['model'].Vocab       = Vocab
 sys.modules['model.model'].Vocab = Vocab
 
-
-def compute_phase1_loss(traj: dict, GT_move_types: list, GT_labels: list,
+def compute_phase1_loss(traj: dict, GT_labels: list,
                         env, vocab) -> torch.Tensor:
     """
-    Supervised loss between generated alignment and ground-truth alignment.
-
-    Both move-type and label predictions are treated as multi-class
-    classification → cross-entropy (not BCE).
-
-    Args:
-        traj          : dict returned by model.generate()
-                        must contain 'move_logits' and 'label_logits'
-                        (lists of raw logits tensors, one per step)
-        GT_move_types : list[str]  e.g. ["S", "M", "L", "M"]
-        GT_labels     : list[str]  e.g. ["a", "f", "b", "d"]
-        env           : AlignmentEnv  (owns MOVE_SPACE, LABEL_SPACE)
-
-    Returns:
-        scalar loss tensor with grad_fn
+    Supervised loss on label predictions only.
+    Move type is handled by env.infere_move_type, not learned here.
     """
-    T = min(len(traj['move_logits']), len(GT_move_types))
+    T = min(len(traj['label_logits']), len(GT_labels))
     if T == 0:
         return torch.tensor(0.0, requires_grad=True)
 
-    # ── Stack logits: shape (T, n_moves) and (T, n_labels) ───────────────────
-    move_logits_stack  = torch.stack(traj['move_logits'][:T],  dim=0)   # (T, |MOVE_SPACE|)
-    label_logits_stack = torch.stack(traj['label_logits'][:T], dim=0)   # (T, |LABEL_SPACE|)
+    label_logits_stack = torch.stack(traj['label_logits'][:T], dim=0)  # (T, |LABEL_SPACE|)
 
-    # ── Build integer targets from GT strings ─────────────────────────────────
-    move2idx  = {m: i for i, m in enumerate(env.MOVE_SPACE)}
     label2idx = {l: i for i, l in enumerate(env.LABEL_SPACE)}
-    move_targets = torch.tensor(
-        [move2idx[m] for m in GT_move_types[:T]], dtype=torch.long
-    )                                                                     # (T,)
     label_targets = torch.tensor(
         [label2idx[l] for l in GT_labels[:T]], dtype=torch.long
-    )                                                                     # (T,)
-    
-    # ── Cross-entropy losses ──────────────────────────────────────────────────
-    ce = nn.CrossEntropyLoss()
-    loss_move  = ce(move_logits_stack,  move_targets)   # scalar
-    loss_label = ce(label_logits_stack, label_targets)  # scalar
+    )
+    ce_loss = nn.CrossEntropyLoss()(label_logits_stack, label_targets)
+    c_indices = [i for i, m in enumerate(traj['moves_str'][:T]) if m == "C"]
+    if c_indices:
+        c_logits  = torch.stack([traj['label_logits'][i] for i in c_indices])
+        c_targets = torch.tensor(
+            [label2idx[GT_labels[i]] for i in c_indices], dtype=torch.long
+        )
+        c_penalty = nn.CrossEntropyLoss()(c_logits, c_targets)
+        return ce_loss + 0.5 * c_penalty   
 
-    return W_MOVE * loss_move + W_LABEL * loss_label
+    return ce_loss
 
 
 def main():
@@ -130,76 +112,75 @@ def main():
 
     # ── Training loop ─────────────────────────────────────────────────────────
     for ep in range(PHASE1_EPOCHS):
-        np.random.shuffle(cases)
+            np.random.shuffle(cases)
 
-        batch_trajs   = []   # accumulated trajectories
-        batch_gt_move = []   # matching GT move-type lists
-        batch_gt_lbl  = []   # matching GT label lists
-        total_loss    = 0.0
-        n_updates     = 0
-        skipped       = 0
+            batch_trajs  = []
+            batch_gt_lbl = []
+            total_loss   = 0.0
+            n_updates    = 0
+            skipped      = 0
 
-        for idx, cid in enumerate(cases):
-            case_df = df[df['case_id'] == cid].sort_values('prefix_length')
+            for idx, cid in enumerate(cases):
+                case_df = df[df['case_id'] == cid].sort_values('prefix_length')
 
-            for _, row in case_df.iterrows():
-                prefix = row['prefix_activities']
-                if not prefix:
-                    continue
+                for _, row in case_df.iterrows():
+                    prefix = row['prefix_activities']
+                    GT_move_types     = row['step_types']
+                    if not prefix:
+                        continue
 
-                src               = torch.tensor([vocab.encode(prefix)])
-                GT_move_types     = row['step_types']        # list[str] e.g. ["S","M",…]
-                GT_activity_labels = row['aligned_prefix']   # list[str] e.g. ["a","b",…]
+                    src                = torch.tensor([vocab.encode(prefix)])
+                    GT_activity_labels = row['aligned_prefix']
 
-                traj, n_invalid = model.generate(
-                    src, prefix, env, vocab, max_len=MAX_STEPS
-                )
-                if idx % 5 ==0 :
-                    print()
-                    print("generted labels : ", traj['labels_str'])
-                    print("gt labels : ", GT_activity_labels)
-                if not traj or 'move_logits' not in traj:
-                    skipped += 1
-                    continue
+                    traj, n_invalid = model.generate(
+                        src, prefix, env, vocab, max_len=MAX_STEPS
+                    )
+                    if idx % 25 == 0 and len(prefix) > 7:
+                        print()
+                        print("prefix    :", prefix)
+                        print("gen labels:", traj['labels_str'])
+                        print("gen moves :", traj['moves_str'])
+                        print("gt labels :", GT_activity_labels)
+                        print("gt move   :", GT_move_types)
 
-                batch_trajs.append(traj)
-                batch_gt_move.append(GT_move_types)
-                batch_gt_lbl.append(GT_activity_labels)
+                    if not traj or not traj['label_logits']:
+                        skipped += 1
+                        continue
 
-                # ── Gradient step when batch is full ──────────────────────────
-                if len(batch_trajs) >= BATCH_SIZE:
-                    opt.zero_grad()
-                    loss = torch.stack([
-                        compute_phase1_loss(t, gm, gl, env, vocab)
-                        for t, gm, gl in zip(batch_trajs, batch_gt_move, batch_gt_lbl)
-                    ]).mean()
-                    print("\nbatch loss :", loss)
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-                    opt.step()
+                    batch_trajs.append(traj)
+                    batch_gt_lbl.append(GT_activity_labels)
 
-                    total_loss  += loss.item()
-                    n_updates   += 1
-                    batch_trajs  = []
-                    batch_gt_move = []
-                    batch_gt_lbl  = []
+                    if len(batch_trajs) >= BATCH_SIZE:
+                        opt.zero_grad()
+                        loss = torch.stack([
+                            compute_phase1_loss(t, gl, env, vocab)
+                            for t, gl in zip(batch_trajs, batch_gt_lbl)
+                        ]).mean()
+                        # print("\nbatch loss:", loss)
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRAD)
+                        opt.step()
 
-        # ── Flush remaining partial batch ─────────────────────────────────────
-        if batch_trajs:
-            opt.zero_grad()
-            loss = torch.stack([
-                compute_phase1_loss(t, gm, gl, env, vocab)
-                for t, gm, gl in zip(batch_trajs, batch_gt_move, batch_gt_lbl)
-            ]).mean()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-            opt.step()
-            total_loss += loss.item()
-            n_updates  += 1
+                        total_loss   += loss.item()
+                        n_updates    += 1
+                        batch_trajs   = []
+                        batch_gt_lbl  = []
 
-        avg_loss = total_loss / max(n_updates, 1)
-        print(f"Epoch {ep+1}/{PHASE1_EPOCHS}  avg_loss={avg_loss:.4f}  "
-              f"updates={n_updates}  skipped={skipped}")
+            if batch_trajs:
+                opt.zero_grad()
+                loss = torch.stack([
+                    compute_phase1_loss(t, gl, env, vocab)
+                    for t, gl in zip(batch_trajs, batch_gt_lbl)
+                ]).mean()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRAD)
+                opt.step()
+                total_loss += loss.item()
+                n_updates  += 1
+
+            avg_loss = total_loss / max(n_updates, 1)
+            print(f"Epoch {ep+1}/{PHASE1_EPOCHS}  avg_loss={avg_loss:.4f}  "
+                f"updates={n_updates}  skipped={skipped}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     torch.save({'state': model.state_dict()}, MODEL_PHASE1_OUT)

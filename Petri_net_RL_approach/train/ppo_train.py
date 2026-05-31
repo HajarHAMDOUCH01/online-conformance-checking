@@ -24,7 +24,7 @@ _paths = _cfg["paths"]
 PROJECT_ROOT     = _paths["project_root"]
 DS_CSV           = _paths["ds_csv"]
 PNML_PATH        = _paths["pnml_path"]
-MODEL_PHASE1_OUT = _p2["model_phase1_out"]   # checkpoint to load 
+MODEL_PHASE1_OUT = _p2["model_phase1_out"]  
 PPO_OUT          = _p2["ppo_out"]            
 
 # ── PPO hyper-parameters ──────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ def ppo_update(model, opt, batch):
     for _ in range(PPO_EPOCHS):
         opt.zero_grad()
         ptr        = 0
-        epoch_loss = torch.tensor(0.0)          # accumulate as a sum, not overwrite
+        epoch_loss = torch.tensor(0.0)     
 
         for traj in batch:
             T        = len(traj['rewards'])
@@ -102,14 +102,16 @@ def ppo_update(model, opt, batch):
             traj_old = old_t[ptr:ptr + T]
             ptr     += T
 
-            h      = model.encode(traj['src_ids'])
+            enc_out, h = model.encode(traj['src_ids'])
+
             new_lp = []
             new_v  = []
 
             for t in range(T):
                 mv     = traj['marks'][t]
                 act_id = traj['act_ids'][t]
-                label_logits, val, h = model.decode_step(mv, h, act_id)
+                label_logits, val, h, _ = model.decode_step(mv, h, enc_out, act_id)
+
 
                 label_dist = torch.distributions.Categorical(
                     torch.softmax(label_logits[0], -1))
@@ -129,14 +131,13 @@ def ppo_update(model, opt, batch):
             entropy    = -new_lp.mean()
 
             traj_loss   = (actor_loss + VF_COEF * value_loss + ENT_COEF * entropy) / len(batch)
-            epoch_loss  = epoch_loss + traj_loss   # accumulate, don't call backward yet
+            epoch_loss  = epoch_loss + traj_loss   
 
-        epoch_loss.backward()                      # one backward per epoch over full batch
+        epoch_loss.backward()                     
         nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD)
         opt.step()
 
     return epoch_loss.item()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main
@@ -147,6 +148,9 @@ def main():
     df = pd.read_csv(DS_CSV)
     df["prefix_activities"] = df["prefix_activities"].apply(ast.literal_eval)
     df = df[df["aligned_prefix"].notna()]
+
+    df["aligned_prefix"] = df["aligned_prefix"].apply(ast.literal_eval)
+    df["step_types"]     = df["step_types"].apply(ast.literal_eval)
 
     train_cases = df["case_id"].unique()[:K_TRAIN]
     df    = df[df["case_id"].isin(train_cases)].reset_index(drop=True)
@@ -198,6 +202,7 @@ def main():
                 prefix = row["prefix_activities"]
                 GT_activity_labels = row['aligned_prefix'] 
                 GT_move_types     = row['step_types']
+
                 if not prefix:
                     continue
 
@@ -205,8 +210,8 @@ def main():
 
                 model.eval()
                 if idx % 10 == 0:
-                    print("prefix :", prefix)
-                    print("gt labels : ", GT_activity_labels)
+                    print("prefix        :",  prefix)
+                    print("gt labels     : ", GT_activity_labels)
                     print("gt move_types : ", GT_move_types)
                 with torch.no_grad():
                     traj, n_invalid = model.generate(src, prefix, env, vocab, max_len=MAX_STEPS)
@@ -238,7 +243,6 @@ def main():
         "vocab": vocab,
         }, PPO_OUT)
     print(f"Phase 2 model saved → {PPO_OUT}")
-
 
 if __name__ == "__main__":
     main()

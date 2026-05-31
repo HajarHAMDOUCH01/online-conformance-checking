@@ -67,7 +67,6 @@ phase1:
   hyperparameters:
     lr:         3.0e-4
     max_grad:   0.5
-    w_move:     1.0   # cross-entropy weight for move-type head
     w_label:    1.0   # cross-entropy weight for activity-label head
  
   # ── Training schedule ──
