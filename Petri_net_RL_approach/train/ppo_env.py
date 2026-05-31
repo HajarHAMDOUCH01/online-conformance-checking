@@ -102,7 +102,7 @@ class AlignmentEnv:
             3. one reward per move type (S -> +1 ; M or L -> -1)
             4. PPO learns reward of the whole path and minimizes the cost of the alignment
         efter reward design :
-            1. predict a label randomly 
+            1. predict a label with mask of S and M and L (mixed mask) 
             2. infere its move type based on the generated alignement 
             3. depending on predicted activity move type :
                 reaward = attendance_to_the_prefix + exploration_rate + alpha / beta / gamma * label's logit
