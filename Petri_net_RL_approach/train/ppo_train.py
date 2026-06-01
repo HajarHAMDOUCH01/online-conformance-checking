@@ -170,12 +170,12 @@ def main():
     # ── Model — load Phase 1 weights ──────────────────────────────────────────
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
 
-    # if MODEL_PHASE1_OUT and os.path.exists(MODEL_PHASE1_OUT):
-    #     ckpt = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
-    #     model.load_state_dict(ckpt["state"], strict=True)
-    #     print(f"Loaded Phase 1 weights from {MODEL_PHASE1_OUT}")
-    # else:
-    #     print("Warning: no Phase 1 checkpoint found — training from scratch.")
+    if MODEL_PHASE1_OUT and os.path.exists(MODEL_PHASE1_OUT):
+        ckpt = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
+        model.load_state_dict(ckpt["state"], strict=True)
+        print(f"Loaded Phase 1 weights from {MODEL_PHASE1_OUT}")
+    else:
+        print("Warning: no Phase 1 checkpoint found — training from scratch.")
 
     opt = torch.optim.Adam(model.parameters(), lr=LR)
 

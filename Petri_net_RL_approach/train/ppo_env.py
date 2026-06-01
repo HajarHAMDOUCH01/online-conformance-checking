@@ -103,7 +103,7 @@ class AlignmentEnv:
             4. PPO learns reward of the whole path and minimizes the cost of the alignment
         efter reward design :
             1. predict a label with mask of S and M and L (mixed mask) 
-            2. infere its move type based on the generated alignement 
+            2. infere its move type based on the generated alignement current marking and the activity in curreent prefix position 
             3. depending on predicted activity move type :
                 reaward = attendance_to_the_prefix + exploration_rate + alpha / beta / gamma * label's logit
                 * attendance_to_the_prefix applies attention mechanism to the priginal prefix up to current pos 
@@ -142,11 +142,16 @@ class AlignmentEnv:
         return new_labels[-1], new_moves[-1], total_reward, self.is_done()
 
     def reward_function(self, new_moves, new_labels, labels_logits, attention_weights_to_prefix, moves_for_all_labels):
-        alpha = 0.3
-        beta  = 0.3
-        gamma = 0.3
+        alpha = 0.5
+        beta  = 0.1
+        gamma = 0.0
         move  = new_moves[-1]
         label = new_labels[-1]
+
+        if label == 0 or label == 2:
+            gamma = 0.7
+        else: 
+            gamma = -0.7
 
         label_id    = self.LABEL_SPACE.index(label)
         label_logit = torch.sigmoid(labels_logits[label_id]).item()
