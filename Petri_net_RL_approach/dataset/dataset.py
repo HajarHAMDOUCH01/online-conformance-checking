@@ -16,13 +16,13 @@ print("STEP 1 — Loading Petri net")
 print("=" * 70)
 
 net, im, fm = pm4py.read_pnml(PNML_PATH)
-# from pm4py.objects.petri_net.importer import importer as pnml_importer
-# from pm4py.visualization.petri_net import visualizer as pn_visualizer
+from pm4py.objects.petri_net.importer import importer as pnml_importer
+from pm4py.visualization.petri_net import visualizer as pn_visualizer
 
-# gviz = pn_visualizer.apply(net, im, fm)
-# pn_visualizer.view(gviz)
+gviz = pn_visualizer.apply(net, im, fm)
+pn_visualizer.view(gviz)
 
-# log_all = xes_importer.apply(XES_PATH)
+log_all = xes_importer.apply(XES_PATH)
 
 print(f"Places           : {len(net.places)}")
 print(f"Transitions      : {len(net.transitions)}")
@@ -73,7 +73,7 @@ def _dijkstra_prefix_alignment(prefix: list) -> tuple:
     goal_pos   = len(prefix)
     dist       = {}
     parent     = {}
-    init_state = (_IM_TUPLE, 0)          # always start from initial marking
+    init_state = (_IM_TUPLE, 0)          # always starting from initial marking
 
     dist[init_state]   = 0
     parent[init_state] = None
