@@ -6,9 +6,9 @@ import pm4py
 from pm4py.objects.petri_net.obj import PetriNet
 from pm4py.objects.log.importer.xes import importer as xes_importer
 
-DS_CSV             = r""
-PNML_PATH          = r""
-XES_PATH           = None
+DS_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data\data_event_log\data\data\heuristics_miner\heuristics_dedup_1min_dep080_and080_loop090_prefix_alignments_dataset.csv"
+PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data\data_event_log\data\dicovery_models_imgs\heuristics_miner\heuristics_dedup_1min_dep080_and080_loop090.pnml"
+XES_PATH           = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data\data_event_log\data\data\ordered_cleaned_event_log_normalized_with_conformance.xes"
 ACTIVITY_KEY = "concept:name"
 
 print("=" * 70)
@@ -16,14 +16,27 @@ print("STEP 1 — Loading Petri net")
 print("=" * 70)
 
 net, im, fm = pm4py.read_pnml(PNML_PATH)
+
+print("initial marking : ", im)
+sink_place = next(p for p in net.places if p.name == "sink0")
+
+fm = pm4py.generate_marking(net, {sink_place: 1})
+print("final marking : ", fm)
 from pm4py.objects.petri_net.importer import importer as pnml_importer
 from pm4py.visualization.petri_net import visualizer as pn_visualizer
 
-gviz = pn_visualizer.apply(net, im, fm)
-pn_visualizer.view(gviz)
+# gviz = pn_visualizer.apply(net, im, fm)
+# pn_visualizer.view(gviz)
 
 log_all = xes_importer.apply(XES_PATH)
 
+neg_traces = [
+    trace for trace in log_all
+    if float(trace.attributes.get("trace_fitness", 1.0)) < 0.7
+]
+
+print(f"Total traces:          {len(log_all)}")
+print(f"Low-fitness traces (<0.7): {len(neg_traces)}")
 print(f"Places           : {len(net.places)}")
 print(f"Transitions      : {len(net.transitions)}")
 print(f"Unique labels    : {len({t.label for t in net.transitions if t.label})}")
@@ -164,6 +177,7 @@ def align_prefix(activities: list) -> dict:
         is_conforming  = (total_log == 0 and total_model == 0),
         error          = None,
     )
+
 print("\n" + "=" * 70)
 print("STEP 6 — Dataset generation")
 print("=" * 70)
@@ -175,10 +189,11 @@ total_prefixes = 0
 errors         = 0
 for idx, trace in enumerate(neg_traces):
     case_id    = str(trace.attributes.get("concept:name", f"case_{idx}"))
-    activities = [str(ev["category"]) for ev in trace]
+    activities = [str(ev["concept:name"]) for ev in trace]
     rows       = []
 
-    for k in range(1, len(activities) + 1, 2):
+    for k in range(1, len(activities) + 1):
+    # for k in range(1, len(activities) + 1, 2):
         result = align_prefix(activities[:k])   # fresh each time, no state passed
 
         if result.get("error"):
@@ -197,6 +212,7 @@ for idx, trace in enumerate(neg_traces):
             "is_conforming":     result.get("is_conforming"),
             "error":             result.get("error"),
         })
+        print(rows)
 
 
     pd.DataFrame(rows).to_csv(

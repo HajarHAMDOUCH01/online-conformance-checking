@@ -45,8 +45,8 @@ class AlignmentEnv:
         for t in self._visible_transitions:
             self._label_to_trans[t.label].append(t)
 
-        self._im_name_dict = {p.name: cnt for p, cnt in im.items() if cnt > 0}
-
+        self._im_name_dict = {p.name: cnt for p, cnt in im.items() if cnt > 0}  
+        self._silent_closure_cache: dict = {}
     def reset(self, prefix: list) -> torch.Tensor:
         self.prefix  = list(prefix)
         self.pos     = 0
@@ -69,10 +69,15 @@ class AlignmentEnv:
         return self.pos >= len(self.prefix)
 
     def infere_move_type(self, label, position):
-        enabled = self._enabled_visible()
+        
         label_str = self.LABEL_SPACE[label]
         act = self.current_activity()  # prefix[self.pos]
         next_act = self.prefix[self.pos + 1] if (self.pos + 1) < len(self.prefix) else act
+
+        enabled = self._enabled_visible()
+        enabled_after_silent = self._labels_enabled_after_silent(self.marking)
+
+        enabled = enabled | enabled_after_silent
 
         # check current pos first, then next
         if label_str == act and label_str in enabled:
@@ -84,6 +89,9 @@ class AlignmentEnv:
 
     def valid_label_mask(self) -> torch.Tensor:
         enabled = self._enabled_visible()
+        enabled_after_silent = self._labels_enabled_after_silent(self.marking)
+
+        enabled = enabled | enabled_after_silent
         act = self.current_activity()
         mask = torch.tensor(
             [label in enabled or label == act for label in self.LABEL_SPACE],
@@ -123,14 +131,36 @@ class AlignmentEnv:
         if move == "L":
             self.pos += 1
         if move in ("S", "M"):
-
             fired = False
+            
             for t in enabled:
                 if t.label == label:
-                    # to do : fix : may not be deterministic if multiple transitions share the same label => to dooo. 
                     self.marking = self.sem.weak_execute(t, self.net, self.marking)
                     fired = True
-                    break 
+                    break
+
+            if not fired:
+                m_dict   = {p.name: v for p, v in self.marking.items() if v > 0}
+                closure  = self._silent_closure(m_dict)                  # dict: marking_tup → [tau_1, tau_2, ...]
+
+                for target_tup, silent_path in closure.items():
+                    target_dict = dict(target_tup)
+
+                    matching_t = next(
+                        (t for t in self._label_to_trans.get(label, [])
+                        if self._is_enabled(target_dict, t)),
+                        None
+                    )
+
+                    if matching_t is not None:
+                        # Replay silent transitions to reach target marking
+                        for tau in silent_path:
+                            self.marking = self.sem.weak_execute(tau, self.net, self.marking)
+
+                        # Fire the visible transition
+                        self.marking = self.sem.weak_execute(matching_t, self.net, self.marking)
+                        fired = True
+                        break
         # new state :
             # state includes : prefix and its current position (note we can do marking for prefix too , but it's not used in this environement modelization)
             # state includes : generated alignment and its marking 
@@ -169,22 +199,6 @@ class AlignmentEnv:
 
         reward = did_you_attend + did_you_explore + label_reward
         return reward
-    
-    def _dijk_enabled(self, m_dict: dict, transition) -> bool:
-        return all(
-            m_dict.get(pname, 0) >= w
-            for pname, w in self._in_arcs[transition]
-        )
-
-    def _dijk_fire(self, m_dict: dict, transition) -> dict:
-        result = dict(m_dict)
-        for pname, w in self._in_arcs[transition]:
-            result[pname] = result.get(pname, 0) - w
-            if result[pname] == 0:
-                del result[pname]
-        for pname, w in self._out_arcs[transition]:
-            result[pname] = result.get(pname, 0) + w
-        return result
 
     def _pm4py_marking_to_name_dict(self, marking) -> dict:
         return {p.name: cnt for p, cnt in marking.items() if cnt > 0}
@@ -200,5 +214,88 @@ class AlignmentEnv:
             t for t in self.sem.enabled_transitions(self.net, self.marking)
             if t.label is not None
         ]
+    
+    
 
-# to do => tau function for handling silent transitions
+    def _silent_closure(self, m_dict: dict) -> dict:
+        """
+        BFS over silent transitions from m_dict.
+
+        Returns
+        -------
+        dict mapping  marking_tuple  ->  list[transition]
+            The value is the ordered list of silent transitions that were fired
+            (from m_dict) to reach that marking.
+            The source marking maps to an empty list: came_from[key(m_dict)] = [].
+
+        Usage
+        -----
+            closure = self._silent_closure(m_dict)
+
+            # All reachable markings:
+            for m_tup in closure:
+                ...
+
+            # Replay the path to a specific target:
+            for t in closure[target_tup]:
+                m_dict = self._fire(m_dict, t)
+        """
+        key = _m_tuple(m_dict)
+        if key in self._silent_closure_cache:
+            return self._silent_closure_cache[key]
+
+        # came_from[marking_tuple] = [t1, t2, ...] — the fired transitions IN ORDER
+        came_from: dict[tuple, list] = {key: []}
+        frontier = [(m_dict, [])]          # (current marking dict, path so far)
+
+        while frontier:
+            curr, path = frontier.pop()
+            for t in self._silent_transitions:
+                if self._is_enabled(curr, t):
+                    nm    = self._fire(curr, t)
+                    nkey  = _m_tuple(nm)
+                    if nkey not in came_from:
+                        new_path           = path + [t]   # extend — never mutate
+                        came_from[nkey]    = new_path
+                        frontier.append((nm, new_path))
+
+        self._silent_closure_cache[key] = came_from
+        return came_from
+    
+    
+    def _is_enabled(self, m_dict: dict, transition) -> bool:
+        """True iff all input-arc requirements are satisfied."""
+        return all(m_dict.get(pname, 0) >= w for pname, w in self._in_arcs[transition])
+
+    def _labels_enabled_after_silent(self, marking) -> frozenset:
+        # accept either a Marking or a plain dict
+        m_dict = {p.name: v for p, v in marking.items() if v > 0} \
+                if not isinstance(marking, dict) else marking
+        enabled = set()
+        for m_tup in self._silent_closure(m_dict):
+            m_tmp = dict(m_tup)
+            for lbl, trans_list in self._label_to_trans.items():
+                if lbl not in enabled:
+                    for t in trans_list:
+                        if self._is_enabled(m_tmp, t):
+                            enabled.add(lbl)
+                            break          
+        return frozenset(enabled)
+    
+    def _fire(self, m_dict: dict, transition) -> dict:
+        """fires the transition and updates self.marking and returnw a new marking dict after firing transition"""
+        result = dict(m_dict)
+        for pname, w in self._in_arcs[transition]:
+            result[pname] = result.get(pname, 0) - w
+            if result[pname] == 0:
+                del result[pname]
+        for pname, w in self._out_arcs[transition]:
+            result[pname] = result.get(pname, 0) + w
+        # self.marking = Marking({p: v for p, v in result.items()})
+        return result
+    
+
+def _m_tuple(m_dict: dict) -> tuple:
+    """Convert marking dict -> hashable tuple (inline, avoids repeated sorts)."""
+    return tuple(sorted((p, c) for p, c in m_dict.items() if c > 0))
+
