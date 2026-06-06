@@ -4,9 +4,9 @@
 
 # ── Shared paths (used across multiple modules) ──
 paths:
-  ds_csv: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\prefix_alignment_dataset.csv"
-  pnml_path: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\pdc2025_000000.pnml"
-  xes_path: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\pdc2025_000000.xes"
+  ds_csv    : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data\\data\\heuristics_miner\\heuristics_dedup_1min_dep080_and080_loop090_prefix_alignments_dataset.csv"
+  pnml_path : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data\\dicovery_models_imgs\\heuristics_miner\\heuristics_dedup_1min_dep080_and080_loop090.pnml"
+  xes_path  : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data\\data\\ordered_cleaned_event_log_normalized_with_conformance.xes"
   project_root: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\model\\Petri_net_RL_approach"
 
 # ── Activity key ──

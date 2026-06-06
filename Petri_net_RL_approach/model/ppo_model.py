@@ -42,7 +42,7 @@ class ActorCritic(nn.Module):
 
         return label_logits, value, new_h, attn_weights
     
-    def atten(self, decoder_hidden: torch.Tensor, enc_out: torch.Tensor) -> torch.Tensor:
+    def atten(self, decoder_hidden: torch.Tensor, enc_out: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # decoder_hidden: (1, 1, hidden_dim) : representing generated activities so far (markings trajectory and previous activities)
         # enc_out:        (1, seq_len, hidden_dim) : representing the prefix in hidden space 
         q = self.attn_q(decoder_hidden)                        # (1, 1, hidden_dim)
@@ -51,9 +51,9 @@ class ActorCritic(nn.Module):
         scores = torch.bmm(q, k.transpose(1, 2))               # (1, 1, seq_len) 
         weights = torch.softmax(scores, dim=-1)                # (1, 1, seq_len) : weights per original prefix activity for the generation in this step
         context = torch.bmm(weights, v)                        # (1, 1, hidden_dim)
-        fused   = self.attn_out(
+        fused   = torch.Tensor(self.attn_out(
             torch.cat([decoder_hidden, context], dim=-1)
-        )                                                      # (1, 1, hidden_dim)
+        ))                                                    # (1, 1, hidden_dim)
         return fused, weights.squeeze(0).squeeze(0)                        # weights for reward_function
 
     def load_from_supervised(self, ckpt_path: str):
@@ -101,13 +101,14 @@ class ActorCritic(nn.Module):
         n_invalid = 0
 
         for i in range(0, max_len):
+            done = False
             act    = env.current_activity()
             act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
             data['act_ids'].append(act_id)
 
             label_logits, value, h, attn_weights = self.decode_step(mv, h, enc_out, act_id)
             position = 1
-            moves_for_all_labels = [env.infere_move_type(i, position) for i in range(len(env.LABEL_SPACE))]
+            moves_for_all_labels = [env.infere_move_type(i) for i in range(len(env.LABEL_SPACE))]
             data['label_logits'].append(label_logits[0]) # label_logits hsape (1, n_labels)
 
             valid_labels_mask = env.valid_label_mask()
@@ -115,24 +116,31 @@ class ActorCritic(nn.Module):
             ll = label_logits.clone()
             ll[0][~valid_labels_mask] = float('-inf') 
 
+            if torch.isnan(torch.softmax(ll[0], -1)).any():
+                print(f"  [WARN] NaN in softmax at step {i}, using uniform")
+                ll = torch.zeros_like(label_logits)
+
             label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
             label      = label_dist.sample() if train else label_dist.probs.argmax()
 
             old_lp = label_dist.log_prob(label).item() 
             position = i        
-            move = env.infere_move_type(label.item(), position)
+            move = env.infere_move_type(label.item())
+            ### debug
+            if move == 3:
+                raise RuntimeError("move can only be L/M/S; Mask didn't work !")
+            
             move_str  = env.MOVE_SPACE[move]
             
             label_str = env.LABEL_SPACE[label]
-
-            label_str, move_str, reward, done = env.step(self, move, label.item(), list(data['moves']), list(data['labels']), label_logits[0], attn_weights, moves_for_all_labels)
+            label_str, move_str, reward, done = env.step(self, move, label.item(), list(data['moves']), list(data['labels']), label_logits[0], attn_weights, moves_for_all_labels, done)
             
             label = env.LABEL_ID_SPACE[label_str]
             move = env.MOVE_ID_SPACE[move_str]
 
             data['rewards'].append(float(reward))
-            if move_str in ("S", "M") and reward == -2.0:
-                n_invalid += 1
+            if reward == -20.0:
+                done = True
 
             new_mv = env.marking_vec()
             data['marks'].append(mv.clone())
