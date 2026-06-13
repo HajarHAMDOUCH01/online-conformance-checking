@@ -3,19 +3,23 @@ import torch.nn as nn
 
 class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
-                 emb_dim: int = 64, hidden_dim: int = 128):
+                 emb_dim: int = 64, hidden_dim: int = 128,
+                 prefix_attn_window: float = 2.0):
         super().__init__()
-
+        self.emb_dim = emb_dim
+        self.prefix_attn_window = prefix_attn_window
+        self.attn_scale = hidden_dim ** -0.5
         self.emb          = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
         self.enc          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
         self.marking_proj = nn.Linear(n_places, emb_dim, bias=False)
-        self.fuse_proj    = nn.Linear(emb_dim * 2, emb_dim, bias=False)
+        self.fuse_proj    = nn.Linear(emb_dim * 3, emb_dim, bias=False)
         self.dec          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
-
+        self.pos_emb = nn.Embedding(70, self.emb_dim)
         self.attn_q       = nn.Linear(hidden_dim, hidden_dim, bias=False)  # query from decoder hidden
         self.attn_k       = nn.Linear(hidden_dim, hidden_dim, bias=False)  # key from encoder outputs
         self.attn_v       = nn.Linear(hidden_dim, hidden_dim, bias=False)  # value from encoder outputs
         self.attn_out     = nn.Linear(hidden_dim * 2, hidden_dim, bias=False)  # fuse context + hidden
+        self.state_norm   = nn.LayerNorm(hidden_dim)
 
         self.label_head   = nn.Linear(hidden_dim, n_labels)
         self.critic       = nn.Linear(hidden_dim, 1)
@@ -29,31 +33,53 @@ class ActorCritic(nn.Module):
         enc_out, h = self.enc(self.emb(src))   # enc_out: (1, seq_len, hidden_dim)
         return enc_out, h
 
-    def decode_step(self, mv: torch.Tensor, h: torch.Tensor, enc_out: torch.Tensor, act_id: int = 0):
+    def decode_step(self, pos, mv: torch.Tensor, h: torch.Tensor, enc_out: torch.Tensor, act_id: int = 0):
+        # print("mv.shape =", mv.shape)
+        # print("expected =", self.marking_proj.in_features)
         marking_emb  = self.marking_proj(mv).view(1, 1, -1)
-        activity_emb = self.emb(torch.tensor([[act_id]])).float()
-        inp = self.fuse_proj(torch.cat([marking_emb, activity_emb], dim=-1)) # shape (1, 1, 64)
+        activity_emb = self.emb(torch.tensor([[act_id]], device=mv.device)).float()
+        
+        pos_id = min(pos, self.pos_emb.num_embeddings - 1)
+        pos_emb = self.pos_emb(torch.tensor([[pos_id]], device=mv.device))
 
-        out, new_h = self.dec(inp, h)                          # out: (1, 1, hidden_dim)
-        attended, attn_weights = self.atten(out, enc_out)      # re-read the prefix
+        inp = self.fuse_proj(
+            torch.cat([
+                marking_emb,
+                activity_emb,
+                pos_emb
+            ], dim=-1)
+        )
 
-        label_logits = self.label_head(attended.squeeze(1))
-        value        = self.critic(attended.squeeze(1)).squeeze(-1)
+        # inp = self.fuse_proj(torch.cat([marking_emb, activity_emb], dim=-1)) # shape (1, 1, 64)
+
+        out, new_h = self.dec(inp, h)
+
+        readout, attn_weights = self.atten(out, enc_out, focus_pos=pos)
+        new_h = self.state_norm(new_h + readout.transpose(0, 1))   # (1, 1, H)
+
+        label_logits = self.label_head(readout.squeeze(1))
+        value        = self.critic(readout.squeeze(1)).squeeze(-1)
 
         return label_logits, value, new_h, attn_weights
     
-    def atten(self, decoder_hidden: torch.Tensor, enc_out: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def atten(self, decoder_hidden: torch.Tensor, enc_out: torch.Tensor,
+              focus_pos: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         # decoder_hidden: (1, 1, hidden_dim) : representing generated activities so far (markings trajectory and previous activities)
         # enc_out:        (1, seq_len, hidden_dim) : representing the prefix in hidden space 
         q = self.attn_q(decoder_hidden)                        # (1, 1, hidden_dim)
         k = self.attn_k(enc_out)                               # (1, seq_len, hidden_dim)
         v = self.attn_v(enc_out)                               # (1, seq_len, hidden_dim)
-        scores = torch.bmm(q, k.transpose(1, 2))               # (1, 1, seq_len) 
+        scores = torch.bmm(q, k.transpose(1, 2)) * self.attn_scale  # (1, 1, seq_len)
+        if focus_pos is not None:
+            positions = torch.arange(enc_out.size(1), device=enc_out.device, dtype=scores.dtype)
+            distance = positions - min(focus_pos, enc_out.size(1) - 1)
+            local_bias = -0.5 * (distance / self.prefix_attn_window).pow(2)
+            scores = scores + local_bias.view(1, 1, -1)
         weights = torch.softmax(scores, dim=-1)                # (1, 1, seq_len) : weights per original prefix activity for the generation in this step
         context = torch.bmm(weights, v)                        # (1, 1, hidden_dim)
-        fused   = torch.Tensor(self.attn_out(
+        fused = torch.tanh(self.attn_out(
             torch.cat([decoder_hidden, context], dim=-1)
-        ))                                                    # (1, 1, hidden_dim)
+        ))                                                   # (1, 1, hidden_dim)
         return fused, weights.squeeze(0).squeeze(0)                        # weights for reward_function
 
     def load_from_supervised(self, ckpt_path: str):
@@ -88,13 +114,14 @@ class ActorCritic(nn.Module):
         print(f"Skipped: {skipped}")
         return ckpt['vocab']
     
-    def generate(self, src, prefix, env, vocab, max_len=150, train=True):
+    def generate(self, src, prefix, env, vocab, max_len=60, train=True):
         self.train()
         data = dict(
             marks=[], moves=[], labels=[],
             moves_str=[], labels_str=[],
             label_logits=[],rewards=[],
-            old_lps=[], values=[], dones=[], src_ids=src, act_ids=[]
+            old_lps=[], values=[], dones=[], src_ids=src, act_ids=[],
+            positions=[], valid_label_masks=[]
         )
         enc_out, h = self.encode(src)
         mv = env.reset(prefix)
@@ -105,17 +132,21 @@ class ActorCritic(nn.Module):
             act    = env.current_activity()
             act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
             data['act_ids'].append(act_id)
-
-            label_logits, value, h, attn_weights = self.decode_step(mv, h, enc_out, act_id)
+            pos = env.pos
+            data['positions'].append(pos)
+            label_logits, value, h, attn_weights = self.decode_step(pos, mv, h, enc_out, act_id)
             position = 1
             moves_for_all_labels = [env.infere_move_type(i) for i in range(len(env.LABEL_SPACE))]
             data['label_logits'].append(label_logits[0]) # label_logits hsape (1, n_labels)
 
             valid_labels_mask = env.valid_label_mask()
+            data['valid_label_masks'].append(valid_labels_mask.clone())
 
             ll = label_logits.clone()
             ll[0][~valid_labels_mask] = float('-inf') 
-
+            # if env.pos == 0:
+            #     gt = env.LABEL_ID_SPACE[env.current_activity()]
+            #     ll[0][gt] += 10.0
             if torch.isnan(torch.softmax(ll[0], -1)).any():
                 print(f"  [WARN] NaN in softmax at step {i}, using uniform")
                 ll = torch.zeros_like(label_logits)
@@ -154,6 +185,17 @@ class ActorCritic(nn.Module):
             mv = new_mv
 
             if done:
+                # Pénaliser les trajectoires trop longues
+                n_moves    = len(data['moves'])
+                n_prefix   = len(prefix)
+                n_m_moves  = data['moves_str'].count('M')
+                
+                # ratio de M-moves : idéalement proche de 0
+                m_ratio = n_m_moves / max(n_moves, 1)
+                
+                # pénalité finale distribuée sur tous les steps
+                length_penalty = -0.5 * m_ratio
+                data['rewards'] = [r + length_penalty for r in data['rewards']]
                 break
 
         return data, n_invalid

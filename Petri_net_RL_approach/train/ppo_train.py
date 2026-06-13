@@ -78,7 +78,7 @@ def compute_gae(rewards, values, dones):
 #  PPO update
 # ─────────────────────────────────────────────────────────────────────────────
 
-def ppo_update(model, opt, batch):
+def ppo_update(env, model, opt, batch):
     flat_advs, flat_rets, flat_old = [], [], []
     for traj in batch:
         adv, ret = compute_gae(traj['rewards'], traj['values'], traj['dones'])
@@ -107,18 +107,23 @@ def ppo_update(model, opt, batch):
             enc_out, h = model.encode(traj['src_ids'])
             new_lp = []
             new_v  = []
+            entropies = []
 
             for t in range(T):
                 mv     = traj['marks'][t]
                 act_id = traj['act_ids'][t]
+                pos    = traj['positions'][t]
                 if traj['dones'][t - 1] if t > 0 else False:
                     break  
-                label_logits, val, h, _ = model.decode_step(mv, h, enc_out, act_id)
+                label_logits, val, h, _ = model.decode_step(pos, mv, h, enc_out, act_id)
                 ll = label_logits.clone()
+                valid_mask = traj['valid_label_masks'][t].to(ll.device)
+                ll[0][~valid_mask] = float('-inf')
                 label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
 
-                new_lp.append(label_dist.log_prob(torch.tensor(traj['labels'][t])))
+                new_lp.append(label_dist.log_prob(torch.tensor(traj['labels'][t], device=ll.device)))
                 new_v.append(val)
+                entropies.append(label_dist.entropy())
 
             new_lp = torch.stack(new_lp)
             new_v  = torch.stack(new_v).squeeze(-1)
@@ -130,10 +135,8 @@ def ppo_update(model, opt, batch):
 
             actor_loss = -torch.min(s1, s2).mean()
             value_loss =  0.5 * (new_v - traj_ret.detach()).pow(2).mean()
-            # entropy    = -new_lp.mean()
-            probs = torch.clamp(torch.softmax(new_lp, -1), min=1e-8)
-            entropy = -(probs * probs.log()).sum()
-            traj_loss   = (actor_loss + VF_COEF * value_loss + ENT_COEF * entropy) / len(batch)
+            entropy = torch.stack(entropies).mean()
+            traj_loss   = (actor_loss + VF_COEF * value_loss - ENT_COEF * entropy) / len(batch)
             epoch_loss  = epoch_loss + traj_loss   
 
         epoch_loss.backward()                     
@@ -168,8 +171,8 @@ def main():
     net, im, fm = pm4py.read_pnml(PNML_PATH)
     print("Initial marking:", im)
 
-    sink_place = next(p for p in net.places if p.name == "sink0")
-    fm = pm4py.generate_marking(net, {sink_place: 1})
+    sink_place = next(p for p in net.places if p.name == "sink")
+    fm = pm4py.generate_marking(net, sink_place)
     print("Final marking  :", fm)
     labels      = [t.label for t in net.transitions if t.label is not None]
     env         = AlignmentEnv(net, im, labels)
@@ -214,7 +217,7 @@ def main():
         def _flush_batch():
             print("started ppo update")
             nonlocal total_loss, n_updates
-            l = ppo_update(model, opt, batch)
+            l = ppo_update(env, model, opt, batch)
             total_loss += l
             n_updates  += 1
             batch.clear()
