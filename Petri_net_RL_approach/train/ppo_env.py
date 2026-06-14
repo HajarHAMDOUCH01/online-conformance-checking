@@ -88,7 +88,7 @@ class AlignmentEnv:
         for t in self._visible_transitions:
             self._label_to_trans[t.label].append(t)
 
-        self._sink_place_name = "sink0"
+        self._sink_place_name = "sink"
         self._im_name_dict    = {p.name: cnt for p, cnt in im.items() if cnt > 0}
 
     # =========================================================================
@@ -315,7 +315,7 @@ class AlignmentEnv:
             if label_str in all_enabled:
                 return 1
             else: 
-                return 3 ## for debug
+                return 3
         # not enabled and not the current prefix position are masked
 
     def valid_label_mask(self) -> torch.Tensor:
@@ -333,29 +333,20 @@ class AlignmentEnv:
         m_dict      = self._marking_to_dict()
         current_tup = _m_tuple(m_dict)
         act         = self.current_activity()
-        reachable   = self._silent_reachable(m_dict)
 
-        # One pass over reachable markings; collect all safely-fireable labels
         safe_fireable: set[str] = set()
+        for lbl in self._label_to_trans:
+            silent_path, matching_t = self._silent_path_to(m_dict, lbl)
+            if silent_path is None or matching_t is None:
+                continue
 
-        for m_tup in reachable:
-            # Short-circuit when every label is already confirmed safe
-            if len(safe_fireable) == len(self._label_to_trans):
-                break
-            m_tmp = dict(m_tup)
-            for lbl, trans_list in self._label_to_trans.items():
-                if lbl in safe_fireable:
-                    continue
-                for t in trans_list:
-                    if not self._is_enabled(m_tmp, t):
-                        continue
-                    new_m   = self._fire(m_tmp, t)
-                    new_tup = _m_tuple(new_m)
-                    # Reject: firing leads back to current marking (cycle)
-                    # Reject: M-move that dumps a token in the sink place # because it ends learning 
-                    if new_tup != current_tup and self._sink_place_name not in new_m:
-                        safe_fireable.add(lbl)
-                    break   # only one transition per label per marking needed => to do : from a marking, there are multiple transitions with the same label
+            target_m = self._replay_silent_path(m_dict, silent_path)
+            new_m    = self._fire(target_m, matching_t)
+            new_tup  = _m_tuple(new_m)
+
+            is_current_activity = lbl == act
+            if new_tup != current_tup and (is_current_activity or self._sink_place_name not in new_m):
+                safe_fireable.add(lbl)
 
         mask = [
             (lbl == act) or (lbl in safe_fireable)
@@ -365,7 +356,15 @@ class AlignmentEnv:
         # Fallback: if everything is masked out, open all labels so the agent
         # always has at least one valid action
         if not result.any():
-            result = torch.ones(len(self.LABEL_SPACE), dtype=torch.bool)
+            # Forcer log-only : seul le current activity est autorisé
+            # Si act n'est pas dans LABEL_SPACE, autoriser tous les labels
+            # mais marquer comme L obligatoire
+            if act in self.LABEL_SPACE:
+                result = torch.zeros(len(self.LABEL_SPACE), dtype=torch.bool)
+                result[self.LABEL_SPACE.index(act)] = True
+            else:
+                # Label inconnu → log-only forcé, on garde le fallback
+                result = torch.ones(len(self.LABEL_SPACE), dtype=torch.bool)
         return result
 
     # =========================================================================
@@ -407,18 +406,19 @@ class AlignmentEnv:
         if self.is_done() or done == True:
             return label, move, 0.0, True
 
-        if move in ("S", "L"):
+        if move == "L":
             self.pos += 1
 
         if move in ("S", "M"):
             current_m   = self._marking_to_dict()
             current_tup = _m_tuple(current_m)
             fired       = False
-
+            print("label = ", label)
             # ------------------------------------------------------------------
             # Stage 1: direct firing
             # ------------------------------------------------------------------
             for t in self.real_enabled_visible():
+                
                 if t.label != label:
                     continue
                 new_m   = self._fire(current_m, t)
@@ -432,7 +432,8 @@ class AlignmentEnv:
                 break
             if not fired:
                 silent_path, matching_t = self._silent_path_to(current_m, label)
-
+                print("matching t = ", matching_t)
+                
                 if silent_path is not None and matching_t is not None:
                     target_m = self._replay_silent_path(current_m, silent_path)
                     new_m    = self._fire(target_m, matching_t)
@@ -449,6 +450,13 @@ class AlignmentEnv:
                         self.marking = self.sem.weak_execute(
                             matching_t, self.net, self.marking
                         )
+                        # print("in marking : ", current_m)
+                        
+                        fired = True
+
+            if move == "S":
+                print("pos+1")
+                self.pos += 1
 
         prev_moves.append(move)
         prev_labels.append(label)
@@ -461,62 +469,50 @@ class AlignmentEnv:
     # =========================================================================
     # Reward
     # =========================================================================
-
-    def reward_function(
-        self,
-        new_moves:                     list,
-        new_labels:                    list,
-        labels_logits:                 torch.Tensor,
-        attention_weights_to_prefix:   torch.Tensor,
-        moves_for_all_labels:          list,
-    ) -> float:
-        alpha = 0.5
-        beta  = 0.1
+    def reward_function(self, new_moves, new_labels, labels_logits,
+                        attention_weights_to_prefix, moves_for_all_labels):
+        
         label = new_labels[-1]
         move  = new_moves[-1]
+        step  = len(new_moves)
         reward = 0.0
 
-        if move == "S" or move == "L":
-            reward += 2.0
+        # # ── Récompense par type de move ──────────────────────────────────
+        if move == "S":
+            reward += 3.0                    # sync = parfait
+            # bonus si trouvé rapidement
+            reward += max(0, 5 - 0.5 * step)
 
         elif move == "L":
-            reward += 0.5
+            reward += 1.0                    # log-only = acceptable
 
-            m_streak = 0
-            for m in reversed(new_moves):
-                if m == "M":
-                    m_streak += 1
-                else:
-                    break  
+        m_streak = 0
+        for m in reversed(new_moves):
+            if m == "M":
+                m_streak += 1
+            else:
+                break
+        reward -= 0.3 * (m_streak ** 2)
 
-            if m_streak >= 10:
-                reward = -20.0
-                return reward
+        # # ── Récompense récupération après M-moves ─────────────────────────
+        if len(new_moves) >= 2 and new_moves[-2] == "M":
+            if move == "S":
+                reward += 2.0               # bien récupéré
+            elif move == "L":
+                reward += 0.5
+            elif move == "M":
+                reward -= 0.3               # continue à errer
 
-            reward -= (m_streak - 1) * 2.0
-
-        # reward recovering from model moves
-        if len(new_moves) >= 2 and new_moves[-2] == "M" and move == "S":
-            reward += 3.0
-        if len(new_moves) >= 2 and new_moves[-2] == "M" and move == "L":
-            reward += -0.2
-
+        # ── Confidence du logit ───────────────────────────────────────────
         label_id    = self.LABEL_SPACE.index(label)
         label_logit = torch.sigmoid(labels_logits[label_id]).item()
-        # add and multiplied by confidence of logit
-        reward += 0.2 * label_logit
-        model_moves_logits = [
-            labels_logits[i]
-            for i, mt in enumerate(moves_for_all_labels)
-            if mt == 2
-        ]
-        ratio_high_model = (
-            sum(1 for lg in model_moves_logits if lg.item() > 0.5)
-            / len(labels_logits)
-        ) if len(labels_logits) > 0 else 0.0
+        reward += 0.1 * label_logit
 
-        did_you_attend  = alpha * attention_weights_to_prefix.max().item()
-        did_you_explore = beta  * ratio_high_model
-        
+        # ── Attention sur le préfixe ──────────────────────────────────────
+        # reward += 0.3 * attention_weights_to_prefix.max().item()
+        attended_pos = attention_weights_to_prefix.argmax().item()
 
-        return did_you_attend + did_you_explore + reward
+        distance = abs(attended_pos - self.pos)
+
+        reward += 1.5 * (1.0 / (1.0 + distance))
+        return reward

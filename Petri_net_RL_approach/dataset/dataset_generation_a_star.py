@@ -1,5 +1,6 @@
 import os
 import sys
+import yaml
 import heapq
 import itertools
 import time
@@ -10,22 +11,20 @@ import pm4py
 from pm4py.objects.petri_net.obj import PetriNet
 from pm4py.objects.log.importer.xes import importer as xes_importer
 
-# ── File paths ────────────────────────────────────────────────────────────────
-DS_CSV   = (
-    r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data"
-    r"\data_event_log\data\data\heuristics_miner"
-    r"\heuristics_dedup_1min_dep080_and080_loop090_prefix_alignments_dataset.csv"
-)
-PNML_PATH = (
-    r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data"
-    r"\data_event_log\data\dicovery_models_imgs\heuristics_miner"
-    r"\heuristics_dedup_1min_dep080_and080_loop090.pnml"
-)
-XES_PATH = (
-    r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data"
-    r"\data_event_log\data\data"
-    r"\ordered_cleaned_event_log_normalized_with_conformance.xes"
-)
+# ── Load config ───────────────────────────────────────────────────────────────
+_CFG_PATH = r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach\train\config.yaml"
+
+with open(_CFG_PATH, "r") as f:
+    _cfg = yaml.safe_load(f)
+
+_paths = _cfg["paths"]
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+DS_CSV           = _paths["ds_csv"]
+PNML_PATH        = _paths["pnml_path"]
+XES_PATH         = _paths["xes_path"]
+
+
 
 # ── Move costs  ──────────────────────
 COST_SYNC  = 0   # synchronous move  - log and model agree
@@ -43,15 +42,15 @@ print("=" * 70)
 net, im, fm = pm4py.read_pnml(PNML_PATH)
 print("Initial marking:", im)
 
-sink_place = next(p for p in net.places if p.name == "sink0")
-fm = pm4py.generate_marking(net, {sink_place: 1})
+sink_place = next(p for p in net.places if p.name == "sink")
+fm = pm4py.generate_marking(net, sink_place)
 print("Final marking  :", fm)
 
 print(f"Places           : {len(net.places)}")
 print(f"Transitions      : {len(net.transitions)}")
 print(f"Unique labels    : {len({t.label for t in net.transitions if t.label})}")
 print(f"Silent trans.    : {sum(1 for t in net.transitions if t.label is None)}")
-
+place_by_name = {p.name: p for p in net.places}
 # =============================================================================
 # Pre-compute arc look-up tables (immutable after this point)
 # =============================================================================
@@ -88,8 +87,12 @@ def _marking_to_tuple(marking) -> tuple:
     )
 
 _IM_TUPLE: tuple = _marking_to_tuple(im)
-
-
+from pm4py.objects.petri_net.semantics import ClassicSemantics
+sem = ClassicSemantics()
+enabled = sem.enabled_transitions(net, im)
+print("enabled at init:", [(t.name, t.label) for t in enabled])
+print("visible transitions:", [(t.name, t.label) for t in _visible_transitions])
+print("_in_arcs sample:", list(_in_arcs.items())[:3])
 def _is_enabled(m_dict: dict, transition) -> bool:
     """True iff all input-arc requirements are satisfied."""
     return all(m_dict.get(pname, 0) >= w for pname, w in _in_arcs[transition])
@@ -124,13 +127,6 @@ def _m_tuple(m_dict: dict) -> tuple:
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from pm4py.objects.petri_net.obj import Marking, PetriNet
 
-def _enabled_visible(m_dict, net):
-    marking = Marking({p: v for p, v in m_dict.items()})
-    sem = ClassicSemantics()
-    return [
-        t.label for t in sem.enabled_transitions(net, marking)
-        if t.label is not None
-    ]
 
 _silent_closure_cache: dict = {}
 
@@ -182,13 +178,33 @@ def _labels_enabled_after_silent(m_dict: dict) -> frozenset:
 # heuristic 
 # =============================================================================
 
+
+def _marking_to_dict(marking) -> dict:
+        """Convert self.marking (pm4py Marking, Place-keyed) to a str-keyed dict."""
+        return {p.name: v for p, v in marking.items() if v > 0}
+
+def _enabled_visible(net, marking):
+    sem = ClassicSemantics()
+    # print("marking type:", type(marking))
+    # print("marking:", marking)
+    return {
+        t
+        for t in sem.enabled_transitions(net, marking)
+        if t.label is not None
+    }
+
+def _dict_to_marking(m_dict):
+    return Marking({
+        place_by_name[name]: cnt
+        for name, cnt in m_dict.items()
+    })
 def _heuristic(m_dict: dict, pos: int, prefix: list) -> int:
     """
     Admissible lower bound on future alignment cost for a prefix alignment.
 
     For each remaining activity in prefix[pos:], if it cannot be executed
-    as a synchronous move from any marking reachable via silent transitions
-    from m_dict, it will cost at least 1 (either a log-move, or a model-move
+    as a synchronous move from any marking reachable via silent transitions OR visible transitions
+    from m_dict or via visible transitions from m_dict, it will cost at least 1 (either a log-move, or a model-move
     that eventually enables a sync at extra cost).
     Counting these activities gives h ≤ true remaining cost -> admissible.
 
@@ -197,9 +213,14 @@ def _heuristic(m_dict: dict, pos: int, prefix: list) -> int:
     """
     if pos >= len(prefix):
         return 0
-    enabled = _labels_enabled_after_silent(m_dict)
-    # Count activities in the remaining prefix that are definitely not sync-able
-    h = sum(1 for act in prefix[pos:] if act not in enabled)
+    enabled_after_silent = _labels_enabled_after_silent(m_dict)
+    marking = _dict_to_marking(m_dict)
+    enabled_visible = _enabled_visible(net, marking)
+
+    enabled_union = enabled_after_silent | enabled_visible
+
+    # Count activities in the remaining prefix that are definitely not sync-able through silent transitions OR visible transitions
+    h = sum(1 for act in prefix[pos:] if act not in enabled_union)
     return h
 
 
@@ -256,6 +277,7 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
     -------
     (path, total_cost) where path is a list of (move_type, label) pairs.
     """
+    # print("prefix to align : ", prefix)
     visited_states = 0
     queued_states = 1
     traversed_arcs = 0
@@ -275,14 +297,19 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
 
     # Compute initial f = g + h
     init_m_dict = dict(_IM_TUPLE)
+    # print("init dict : ", init_m_dict)
     h0          = _heuristic(init_m_dict, 0, prefix)
+    # print("h0 heuristic value : ",h0)
     heapq.heappush(heap := [], (h0, next(counter), 0, _IM_TUPLE, 0))
-
+    
     while heap:
+        # print("entered heap")
         f, _, g_curr, m_tup, pos = heapq.heappop(heap)
+        # print("HEAP AFTER POP: ", heap)
 
         state = (m_tup, pos)
-
+        m_dict = dict(m_tup)
+        
         # ── Skip if already closed ──────────────────────
         if state in closed:
             continue
@@ -295,6 +322,7 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
         visited_states += 1
         # ── Goal test ───────────────────────────────────────────────────────
         if pos == goal_pos:
+            # print("reached pos == goal_pos")
             # Reconstruct the path
             path, cur = [], state
             while parent[cur] is not None:
@@ -305,13 +333,13 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
             dict_for_mem_metric["visited_states"]  =visited_states
             dict_for_mem_metric["queued_states"]  =queued_states
             dict_for_mem_metric["traversed_arcs"]  =traversed_arcs
-
+            
             return path, g_curr, dict_for_mem_metric
 
         # ── Expand state ────────────────────────────────────────────────────
         m_dict = dict(m_tup)
         act    = prefix[pos] if pos < goal_pos else None
-
+        
         def _push(new_m_dict: dict, new_pos: int, move_cost: int,
                   move: tuple, _s=state, _g=g_curr):
             """Helper: compute f = g + h and push if better."""
@@ -319,19 +347,36 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
             nonlocal traversed_arcs
             traversed_arcs += 1
             new_g   = _g + move_cost
-            new_tup = _m_tuple(new_m_dict)
+
+            try:
+                new_tup = _m_tuple(new_m_dict)
+            except Exception as exc:
+                # print("exceptionnnnn in _m_tuple call : ", exc)
+                return {"error": str(exc)}
             ns      = (new_tup, new_pos)
             if ns in closed:
                 return
             if new_g < g.get(ns, float("inf")):
                 g[ns]      = new_g
                 parent[ns] = (_s, move)
-                h_val      = _heuristic(new_m_dict, new_pos, prefix)
+                try:
+                    h_val      = _heuristic(new_m_dict, new_pos, prefix)
+                except Exception as exc:
+                    print("exceptionnnnn in heuristic call : ", exc)
                 f_val      = new_g + h_val
-                heapq.heappush(heap, (f_val, next(counter), new_g, new_tup, new_pos))
-                queued_states += 1
+
+
+                try:
+                    heapq.heappush(heap, (f_val, next(counter), new_g, new_tup, new_pos))
+                    # print("pushed to heap: ", f_val, new_g)
+                    queued_states += 1
+                except Exception as exc:
+                    print("exceptionnnnn in heappush call : ", exc)
+                
+        # print("silent transitions : ", _silent_transitions)
         # 1. Silent transitions (tau): cost 0, pos unchanged
         for t in _silent_transitions:
+            # print("entered tau loop")
             if _is_enabled(m_dict, t):
                 _push(_fire(m_dict, t), pos, COST_SILENT, ("tau", None))
 
@@ -339,13 +384,17 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
         if act is not None:
             for t in _label_to_trans.get(act, []):
                 if _is_enabled(m_dict, t):
+                    # print("entered sync case")
                     _push(_fire(m_dict, t), pos + 1, COST_SYNC, ("S", act))
 
         # 3. Model-only moves: cost 1, pos unchanged (fire visible t)
-        for t in _visible_transitions:
+        marking = _dict_to_marking(m_dict)
+        enabled_vis = _enabled_visible(net, marking)
+        for t in enabled_vis:
             if _is_enabled(m_dict, t):
+                # print("entered Model case")
                 _push(_fire(m_dict, t), pos, COST_MODEL, ("M", t.label))
-
+                
         # 4. Log-only move: cost 1, pos advances, marking unchanged
         if act is not None:
             _push(m_dict, pos + 1, COST_LOG, ("L", act))
@@ -382,10 +431,18 @@ def align_prefix(activities: list) -> dict:
 
     try:
         start = time.perf_counter()
+        # print("BEFOREEEEEE A* CALL")
         raw_alignment, total_cost, dict_for_mem_metric = _astar_prefix_alignment(clean)
+        # print("AFTEEEEEEER A* CALL") 
         alignment_time = time.perf_counter() - start
-    except Exception as exc:
-        return {"error": str(exc)}
+    # except Exception as exc:
+    #     print("exception : ", exc)
+    #     return {"error": str(exc)}
+
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
 
     visited_states = dict_for_mem_metric["visited_states"]
     traversed_arcs = dict_for_mem_metric["traversed_arcs"]
@@ -431,14 +488,17 @@ print("Loading XES event log")
 print("=" * 70)
 
 log_all = xes_importer.apply(XES_PATH)
-
+traces_fitnes_list = []
+for trace in log_all:
+    a = float(trace.attributes.get("trace_fitness"))
+    traces_fitnes_list.append(a)
+# print(traces_fitnes_list)
+threshold = 0.88
 neg_traces = [
-    trace for trace in log_all
-    if float(trace.attributes.get("trace_fitness", 1.0)) < 0.7
+    trace for i, trace in enumerate(log_all) if traces_fitnes_list[i] < threshold
 ]
-
 print(f"Total traces              : {len(log_all)}")
-print(f"Low-fitness traces (<0.7) : {len(neg_traces)}")
+print(f"Low-fitness traces {threshold} : {len(neg_traces)}")
 
 # =============================================================================
 # Dataset generation loop
@@ -485,8 +545,12 @@ for idx, trace in enumerate(neg_traces):
             "error":             result.get("error"),
 
         })
-        # print(rows[-1]["prefix_activities"])
-        # print(rows[-1]["step_types"])
+        for step_type in rows[-1]["step_types"]:
+            if step_type == "M":
+
+                print("original prefix : ", rows[-1]["prefix_activities"])
+                print("aligned prefix : ", rows[-1]["aligned_prefix"])
+                print("alignement move types : ", rows[-1]["step_types"])
 
     pd.DataFrame(rows).to_csv(
         DS_CSV, mode="a", header=write_header, index=False

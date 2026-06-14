@@ -49,33 +49,28 @@ sys.modules['__main__'].Vocab    = Vocab
 sys.modules['model'].Vocab       = Vocab
 sys.modules['model.model'].Vocab = Vocab
 
-def compute_phase1_loss(traj: dict, GT_labels: list,
+def compute_phase1_loss(traj: dict, GT_labels: list, GT_moves: list,
                         env, vocab) -> torch.Tensor:
     """
-    Supervised loss on label predictions only.
-    Move type is handled by env.infere_move_type, not learned here.
+    Supervised loss on label and move predictions.
     """
-    T = min(len(traj['label_logits']), len(GT_labels))
+    T = min(len(traj['label_logits']), len(traj['move_logits']), len(GT_labels), len(GT_moves))
     if T == 0:
         return torch.tensor(0.0, requires_grad=True)
 
     label_logits_stack = torch.stack(traj['label_logits'][:T], dim=0)  # (T, |LABEL_SPACE|)
+    move_logits_stack = torch.stack(traj['move_logits'][:T], dim=0)    # (T, |MOVE_SPACE|)
 
     label2idx = {l: i for i, l in enumerate(env.LABEL_SPACE)}
     label_targets = torch.tensor(
         [label2idx[l] for l in GT_labels[:T]], dtype=torch.long
     )
-    ce_loss = nn.CrossEntropyLoss()(label_logits_stack, label_targets)
-    c_indices = [i for i, m in enumerate(traj['moves_str'][:T]) if m == "C"]
-    if c_indices:
-        c_logits  = torch.stack([traj['label_logits'][i] for i in c_indices])
-        c_targets = torch.tensor(
-            [label2idx[GT_labels[i]] for i in c_indices], dtype=torch.long
-        )
-        c_penalty = nn.CrossEntropyLoss()(c_logits, c_targets)
-        return ce_loss + 0.5 * c_penalty   
-
-    return ce_loss
+    move_targets = torch.tensor(
+        [env.MOVE_ID_SPACE[m] for m in GT_moves[:T]], dtype=torch.long
+    )
+    label_loss = nn.CrossEntropyLoss()(label_logits_stack, label_targets)
+    move_loss = nn.CrossEntropyLoss()(move_logits_stack, move_targets)
+    return label_loss + move_loss
 
 
 def main():
@@ -108,7 +103,7 @@ def main():
     #     print("Loaded Phase 1 checkpoint.")
 
     opt    = torch.optim.Adam(model.parameters(), lr=LR)
-    cases = df["case_id"].unique().to_numpy()
+    cases = df["case_id"].unique()
 
     # ── Training loop ─────────────────────────────────────────────────────────
     for ep in range(PHASE1_EPOCHS):
@@ -116,6 +111,7 @@ def main():
 
             batch_trajs  = []
             batch_gt_lbl = []
+            batch_gt_mv  = []
             total_loss   = 0.0
             n_updates    = 0
             skipped      = 0
@@ -133,7 +129,9 @@ def main():
                     GT_activity_labels = row['aligned_prefix']
 
                     traj, n_invalid = model.generate(
-                        src, prefix, env, vocab, max_len=MAX_STEPS
+                        src, prefix, env, vocab, max_len=MAX_STEPS,
+                        teacher_labels=GT_activity_labels,
+                        teacher_moves=GT_move_types,
                     )
                     # if idx % 25 == 0 and len(prefix) > 7:
                         # print()
@@ -149,12 +147,13 @@ def main():
 
                     batch_trajs.append(traj)
                     batch_gt_lbl.append(GT_activity_labels)
+                    batch_gt_mv.append(GT_move_types)
 
                     if len(batch_trajs) >= BATCH_SIZE:
                         opt.zero_grad()
                         loss = torch.stack([
-                            compute_phase1_loss(t, gl, env, vocab)
-                            for t, gl in zip(batch_trajs, batch_gt_lbl)
+                            compute_phase1_loss(t, gl, gm, env, vocab)
+                            for t, gl, gm in zip(batch_trajs, batch_gt_lbl, batch_gt_mv)
                         ]).mean()
                         # print("\nbatch loss:", loss)
                         loss.backward()
@@ -165,12 +164,13 @@ def main():
                         n_updates    += 1
                         batch_trajs   = []
                         batch_gt_lbl  = []
+                        batch_gt_mv   = []
 
             if batch_trajs:
                 opt.zero_grad()
                 loss = torch.stack([
-                    compute_phase1_loss(t, gl, env, vocab)
-                    for t, gl in zip(batch_trajs, batch_gt_lbl)
+                    compute_phase1_loss(t, gl, gm, env, vocab)
+                    for t, gl, gm in zip(batch_trajs, batch_gt_lbl, batch_gt_mv)
                 ]).mean()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRAD)

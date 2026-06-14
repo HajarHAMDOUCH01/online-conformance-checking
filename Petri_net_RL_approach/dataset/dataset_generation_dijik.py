@@ -1,4 +1,4 @@
-import os, sys, heapq, itertools, time
+import os, sys, heapq, itertools, time, yaml
 from collections import defaultdict
 
 import pandas as pd
@@ -6,22 +6,45 @@ import pm4py
 from pm4py.objects.petri_net.obj import PetriNet
 from pm4py.objects.log.importer.xes import importer as xes_importer
 
-DS_CSV             = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data\data_event_log\data\data\heuristics_miner\heuristics_dedup_1min_dep080_and080_loop090_prefix_alignments_dataset.csv"
-PNML_PATH          = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data\data_event_log\data\dicovery_models_imgs\heuristics_miner\heuristics_dedup_1min_dep080_and080_loop090.pnml"
-XES_PATH           = r"C:\Users\LENONVO\OneDrive\Desktop\STAGE-PFE-CRAN\datasets\STAGE_data\data_event_log\data\data\ordered_cleaned_event_log_normalized_with_conformance.xes"
-ACTIVITY_KEY = "concept:name"
+# ── Load config ───────────────────────────────────────────────────────────────
+_CFG_PATH = r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach\train\config.yaml"
 
+with open(_CFG_PATH, "r") as f:
+    _cfg = yaml.safe_load(f)
+
+_paths = _cfg["paths"]
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+DS_CSV           = _paths["ds_csv"]
+PNML_PATH        = _paths["pnml_path"]
+XES_PATH         = _paths["xes_path"]
+
+
+
+# ── Move costs  ──────────────────────
+COST_SYNC  = 0   # synchronous move  - log and model agree
+COST_LOG   = 1   # log-only move     - event in log, not in model
+COST_MODEL = 1   # model-only move   - transition fired, no log event
+COST_SILENT = 0  # silent (tau) transition - always free
+
+# =============================================================================
+# Load Petri net
+# =============================================================================
 print("=" * 70)
-print("STEP 1 — Loading Petri net")
+print("Loading Petri net")
 print("=" * 70)
 
 net, im, fm = pm4py.read_pnml(PNML_PATH)
+print("Initial marking:", im)
 
-print("initial marking : ", im)
-sink_place = next(p for p in net.places if p.name == "sink0")
+sink_place = next(p for p in net.places if p.name == "sink")
+fm = pm4py.generate_marking(net, sink_place)
+print("Final marking  :", fm)
 
-fm = pm4py.generate_marking(net, {sink_place: 1})
-print("final marking : ", fm)
+print(f"Places           : {len(net.places)}")
+print(f"Transitions      : {len(net.transitions)}")
+print(f"Unique labels    : {len({t.label for t in net.transitions if t.label})}")
+print(f"Silent trans.    : {sum(1 for t in net.transitions if t.label is None)}")
 from pm4py.objects.petri_net.importer import importer as pnml_importer
 from pm4py.visualization.petri_net import visualizer as pn_visualizer
 
@@ -35,12 +58,6 @@ neg_traces = [
     if float(trace.attributes.get("trace_fitness", 1.0)) < 0.7
 ]
 
-print(f"Total traces:          {len(log_all)}")
-print(f"Low-fitness traces (<0.7): {len(neg_traces)}")
-print(f"Places           : {len(net.places)}")
-print(f"Transitions      : {len(net.transitions)}")
-print(f"Unique labels    : {len({t.label for t in net.transitions if t.label})}")
-print(f"Silent trans.    : {sum(1 for t in net.transitions if t.label is None)}")
 
 _in_arcs  = defaultdict(list)
 _out_arcs = defaultdict(list)

@@ -118,6 +118,8 @@ def ppo_update(env, model, opt, batch):
                 label_logits, val, h, _ = model.decode_step(pos, mv, h, enc_out, act_id)
                 ll = label_logits.clone()
                 valid_mask = traj['valid_label_masks'][t].to(ll.device)
+                policy_bias = traj['policy_biases'][t].to(ll.device)
+                ll[0] = ll[0] + policy_bias
                 ll[0][~valid_mask] = float('-inf')
                 label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
 

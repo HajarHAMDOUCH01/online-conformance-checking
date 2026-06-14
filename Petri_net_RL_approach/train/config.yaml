@@ -4,9 +4,9 @@
 
 # ── Shared paths (used across multiple modules) ──
 paths:
-  ds_csv    : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data\\data\\heuristics_miner\\heuristics_dedup_1min_dep080_and080_loop090_prefix_alignments_dataset.csv"
-  pnml_path : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data\\dicovery_models_imgs\\heuristics_miner\\heuristics_dedup_1min_dep080_and080_loop090.pnml"
-  xes_path  : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data\\data\\ordered_cleaned_event_log_normalized_with_conformance.xes"
+  ds_csv    : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data_Stage\\data\\prefix_alignements_data\\petri_net_from_split_miner_sm2_eps0.1_eta0.4_prefix_alignments_dataset.csv"
+  pnml_path : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data_Stage\\data\\discovery_models\\split_miner\\split_miner_sm2_eps0.1_eta0.4.pnml"
+  xes_path  : "C:\\Users\\LENONVO\\OneDrive\\Desktop\\STAGE-PFE-CRAN\\datasets\\STAGE_data\\data_event_log\\data_Stage\\data\\split_miner_sm2_eps0.1_eta0.4_xes_conf_metric.xes"
   project_root: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\model\\Petri_net_RL_approach"
 
 # ── Activity key ──
@@ -27,8 +27,8 @@ dataset:
 evaluate:
   ds_csv:           ${paths.ds_csv}
   pnml_path:        ${paths.pnml_path}
-  ppo_pt:           "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\ppo_pt.pth"
-  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_out.pth"
+  ppo_pt:           "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\data_stage\\ppo_pt.pth"
+  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\data_stage\\model_phase1_out.pth"
 
 # ─────────────────────────────────────────────
 #  Module: ppo_train.py
@@ -36,8 +36,8 @@ evaluate:
 phase2:
   ds_csv:           ${paths.ds_csv}
   pnml_path:        ${paths.pnml_path}
-  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_out.pth"
-  ppo_out:          "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\ppo_pt.pth"
+  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\data_stage\\model_phase1_out.pth"
+  ppo_out:          "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\data_stage\\ppo_pt.pth"
 
   # ── PPO hyper-parameters ──
   hyperparameters:
@@ -52,16 +52,16 @@ phase2:
   # ── Training schedule ──
   schedule:
     ppo_epochs: 5
-    episodes:   5
+    episodes:   20
     batch_size: 8
     max_steps:  150
-    k_train:    100
+    k_train:    10
 
 phase1:
   ds_csv:           ${paths.ds_csv}
   pnml_path:        ${paths.pnml_path} 
-  model_phase1_checkpoint: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_checkpoint.pth"    
-  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\model_phase1_out.pth"
+  model_phase1_checkpoint: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\data_stage\\model_phase1_checkpoint.pth"    
+  model_phase1_out: "C:\\Users\\LENONVO\\OneDrive\\Desktop\\preprocessing\\weights\\data_stage\\model_phase1_out.pth"
 
   # ── Imitation hyper-parameters ──
   hyperparameters:
@@ -74,4 +74,4 @@ phase1:
     phase1_epochs: 10
     batch_size:    8
     max_steps:     150
-    k_train:       100
+    k_train:       10

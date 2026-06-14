@@ -64,7 +64,7 @@ def validate_alignment(generated, prefix, env):
     sync_moves = 0
 
     for move, label in zip(generated['moves_str'], generated['labels_str']):
-        enabled_labels = {t.label for t in env.real_enabled_visible()}
+        enabled_labels = env._labels_enabled_after_silent(env._marking_to_dict())
 
         if move == "S":
             act = env.current_activity()
@@ -84,7 +84,7 @@ def validate_alignment(generated, prefix, env):
 
         move_id  = env.MOVE_SPACE.index(move)
         label_id = env.LABEL_SPACE.index(label) if label in env.LABEL_SPACE else 0
-        env.step(move_id, label_id)
+        env.step(None, move_id, label_id, [], [], torch.zeros(len(env.LABEL_SPACE)), torch.zeros(len(prefix)), [])
 
     is_valid      = (n_invalid == 0)
     is_conforming = (log_moves == 0 and model_moves == 0)  

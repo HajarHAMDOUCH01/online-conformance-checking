@@ -4,10 +4,14 @@ import torch.nn as nn
 class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
                  emb_dim: int = 64, hidden_dim: int = 128,
-                 prefix_attn_window: float = 2.0):
+                 prefix_attn_window: float = 2.0,
+                 current_label_bias: float = 5.0,
+                 m_streak_penalty: float = 1.0):
         super().__init__()
         self.emb_dim = emb_dim
         self.prefix_attn_window = prefix_attn_window
+        self.current_label_bias = current_label_bias
+        self.m_streak_penalty = m_streak_penalty
         self.attn_scale = hidden_dim ** -0.5
         self.emb          = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
         self.enc          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
@@ -113,15 +117,36 @@ class ActorCritic(nn.Module):
         print(f"Loaded : {loaded}")
         print(f"Skipped: {skipped}")
         return ckpt['vocab']
+
+    def prefix_policy_bias(self, env, valid_label_mask: torch.Tensor,
+                           prev_moves: list[str], device) -> torch.Tensor:
+        bias = torch.zeros(len(env.LABEL_SPACE), device=device)
+        act = env.current_activity()
+        if act in env.LABEL_ID_SPACE:
+            bias[env.LABEL_ID_SPACE[act]] += self.current_label_bias
+
+        m_streak = 0
+        for move in reversed(prev_moves):
+            if move == "M":
+                m_streak += 1
+            else:
+                break
+
+        if m_streak:
+            for label_id, allowed in enumerate(valid_label_mask.tolist()):
+                if allowed and env.infere_move_type(label_id) == env.MOVE_ID_SPACE["M"]:
+                    bias[label_id] -= self.m_streak_penalty * m_streak
+
+        return bias
     
     def generate(self, src, prefix, env, vocab, max_len=60, train=True):
-        self.train()
+        self.train(train)
         data = dict(
             marks=[], moves=[], labels=[],
             moves_str=[], labels_str=[],
             label_logits=[],rewards=[],
             old_lps=[], values=[], dones=[], src_ids=src, act_ids=[],
-            positions=[], valid_label_masks=[]
+            positions=[], valid_label_masks=[], policy_biases=[]
         )
         enc_out, h = self.encode(src)
         mv = env.reset(prefix)
@@ -141,8 +166,13 @@ class ActorCritic(nn.Module):
 
             valid_labels_mask = env.valid_label_mask()
             data['valid_label_masks'].append(valid_labels_mask.clone())
+            policy_bias = self.prefix_policy_bias(
+                env, valid_labels_mask, data['moves_str'], label_logits.device
+            )
+            data['policy_biases'].append(policy_bias.detach().cpu())
 
             ll = label_logits.clone()
+            ll[0] = ll[0] + policy_bias
             ll[0][~valid_labels_mask] = float('-inf') 
             # if env.pos == 0:
             #     gt = env.LABEL_ID_SPACE[env.current_activity()]
@@ -152,7 +182,8 @@ class ActorCritic(nn.Module):
                 ll = torch.zeros_like(label_logits)
 
             label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
-            label      = label_dist.sample() if train else label_dist.probs.argmax()
+            # label      = label_dist.sample() if train else label_dist.probs.argmax()
+            label        = label_dist.probs.argmax()
 
             old_lp = label_dist.log_prob(label).item() 
             position = i        
