@@ -5,12 +5,11 @@ class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
                  emb_dim: int = 64, hidden_dim: int = 128,
                  prefix_attn_window: float = 2.0,
-                 current_label_bias: float = 5.0,
                  m_streak_penalty: float = 1.0):
         super().__init__()
         self.emb_dim = emb_dim
         self.prefix_attn_window = prefix_attn_window
-        self.current_label_bias = current_label_bias
+        # self.current_label_bias = current_label_bias
         self.m_streak_penalty = m_streak_penalty
         self.attn_scale = hidden_dim ** -0.5
         self.emb          = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
@@ -122,8 +121,6 @@ class ActorCritic(nn.Module):
                            prev_moves: list[str], device) -> torch.Tensor:
         bias = torch.zeros(len(env.LABEL_SPACE), device=device)
         act = env.current_activity()
-        if act in env.LABEL_ID_SPACE:
-            bias[env.LABEL_ID_SPACE[act]] += self.current_label_bias
 
         m_streak = 0
         for move in reversed(prev_moves):
@@ -174,9 +171,6 @@ class ActorCritic(nn.Module):
             ll = label_logits.clone()
             ll[0] = ll[0] + policy_bias
             ll[0][~valid_labels_mask] = float('-inf') 
-            # if env.pos == 0:
-            #     gt = env.LABEL_ID_SPACE[env.current_activity()]
-            #     ll[0][gt] += 10.0
             if torch.isnan(torch.softmax(ll[0], -1)).any():
                 print(f"  [WARN] NaN in softmax at step {i}, using uniform")
                 ll = torch.zeros_like(label_logits)

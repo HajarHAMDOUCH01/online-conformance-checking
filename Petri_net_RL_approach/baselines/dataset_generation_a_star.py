@@ -5,6 +5,7 @@ import heapq
 import itertools
 import time
 from collections import defaultdict
+from collections import defaultdict, deque
 
 import pandas as pd
 import pm4py
@@ -92,7 +93,9 @@ sem = ClassicSemantics()
 enabled = sem.enabled_transitions(net, im)
 print("enabled at init:", [(t.name, t.label) for t in enabled])
 print("visible transitions:", [(t.name, t.label) for t in _visible_transitions])
-print("_in_arcs sample:", list(_in_arcs.items())[:3])
+print("_in_arcs:", list(_in_arcs.items()))
+
+
 def _is_enabled(m_dict: dict, transition) -> bool:
     """True iff all input-arc requirements are satisfied."""
     return all(m_dict.get(pname, 0) >= w for pname, w in _in_arcs[transition])
@@ -128,22 +131,36 @@ from pm4py.objects.petri_net.semantics import ClassicSemantics
 from pm4py.objects.petri_net.obj import Marking, PetriNet
 
 
-_silent_closure_cache: dict = {}
+# =============================================================================
+# Module-level caches (mirrors AlignmentEnv._shared_* but standalone)
+# =============================================================================
+_shared_closure_cache: dict = {}   # marking_tup  -> frozenset[marking_tup]
+_shared_labels_cache:  dict = {}   # marking_tup  -> frozenset[str]
+_shared_path_cache:    dict = {}   # (m_tup, lbl) -> (path, t) | (None, None)
 
 
-def _silent_closure(m_dict: dict) -> frozenset:
+# =============================================================================
+# Silent-closure helpers (standalone, no class dependency)
+# =============================================================================
+
+def _silent_reachable(m_dict: dict) -> frozenset:
     """
-    Return the set of all markings (as tuples) reachable from m_dict by firing
-    only silent transitions, including m_dict itself.  Cached by marking tuple.
+    Return a frozenset of every marking-tuple reachable from m_dict by
+    firing zero or more silent transitions (m_dict itself is included).
+    Cached in _shared_closure_cache.
     """
-    key = _m_tuple(m_dict)
-    if key in _silent_closure_cache:
-        return _silent_closure_cache[key]
+    key    = _m_tuple(m_dict)
+    cached = _shared_closure_cache.get(key)
+    if cached is not None:
+        return cached
 
     visited  = {key}
     frontier = [m_dict]
     while frontier:
         curr = frontier.pop()
+        
+        # tau = next(iter(_silent_transitions))
+        # print(_in_arcs[tau])
         for t in _silent_transitions:
             if _is_enabled(curr, t):
                 nm   = _fire(curr, t)
@@ -153,17 +170,29 @@ def _silent_closure(m_dict: dict) -> frozenset:
                     frontier.append(nm)
 
     result = frozenset(visited)
-    _silent_closure_cache[key] = result
+    _shared_closure_cache[key] = result
     return result
 
 
 def _labels_enabled_after_silent(m_dict: dict) -> frozenset:
     """
-    Return the set of visible labels that have at least one enabled transition
-    in any marking reachable via silent moves from m_dict.
+    Return frozenset of every visible label enabled in any marking
+    reachable from m_dict via silent transitions (m_dict itself included).
+    Cached in _shared_labels_cache.
+    Accepts both Place-keyed (pm4py Marking) and str-keyed dicts.
     """
-    enabled = set()
-    for m_tup in _silent_closure(m_dict):
+    # Normalise to str-keyed dict
+    if m_dict and hasattr(next(iter(m_dict)), "name"):
+        m_dict = {p.name: v for p, v in m_dict.items() if v > 0}
+
+    key    = _m_tuple(m_dict)
+    cached = _shared_labels_cache.get(key)
+    if cached is not None:
+        return cached
+
+    reachable = _silent_reachable(m_dict)
+    enabled   = set()
+    for m_tup in reachable:
         m_tmp = dict(m_tup)
         for lbl, trans_list in _label_to_trans.items():
             if lbl not in enabled:
@@ -171,7 +200,105 @@ def _labels_enabled_after_silent(m_dict: dict) -> frozenset:
                     if _is_enabled(m_tmp, t):
                         enabled.add(lbl)
                         break
-    return frozenset(enabled)
+
+    result = frozenset(enabled)
+    _shared_labels_cache[key] = result
+    return result
+
+
+def _silent_path_to(m_dict: dict, target_label: str):
+    """
+    Targeted BFS over silent transitions.
+    Terminates as soon as target_label becomes fireable.
+
+    Returns
+    -------
+    (silent_path, matching_transition)  or  (None, None)
+    Cached in _shared_path_cache.
+    """
+    key    = (_m_tuple(m_dict), target_label)
+    cached = _shared_path_cache.get(key)
+    if cached is not None:
+        return cached
+
+    visited = {_m_tuple(m_dict)}
+    queue   = deque([(m_dict, [])])
+
+    while queue:
+        curr, path = queue.popleft()
+
+        for t in _label_to_trans.get(target_label, []):
+            if _is_enabled(curr, t):
+                result = (path, t)
+                _shared_path_cache[key] = result
+                return result
+
+        for tau in _silent_transitions:
+            req = _in_arcs[tau]
+            ok = all(curr.get(p, 0) >= w for p, w in req)
+
+            # if ok:
+            #     print("ENABLED:", tau)
+            if _is_enabled(curr, tau):
+                nm  = _fire(curr, tau)
+                nk  = _m_tuple(nm)
+                if nk not in visited:
+                    visited.add(nk)
+                    queue.append((nm, path + [tau]))
+
+    _shared_path_cache[key] = (None, None)
+    return None, None
+
+
+def _replay_silent_path(m_dict: dict, silent_path: list) -> dict:
+    """Fire a sequence of silent transitions and return the resulting marking dict."""
+    result = dict(m_dict)
+    for tau in silent_path:
+        result = _fire(result, tau)
+    return result
+
+
+# def _silent_closure(m_dict: dict) -> frozenset:
+#     """
+#     Return the set of all markings (as tuples) reachable from m_dict by firing
+#     only silent transitions, including m_dict itself.  Cached by marking tuple.
+#     """
+#     key = _m_tuple(m_dict)
+#     if key in _silent_closure_cache:
+#         return _silent_closure_cache[key]
+
+#     visited  = {key}
+#     frontier = [m_dict]
+#     while frontier:
+#         curr = frontier.pop()
+#         for t in _silent_transitions:
+#             if _is_enabled(curr, t):
+#                 nm   = _fire(curr, t)
+#                 nkey = _m_tuple(nm)
+#                 if nkey not in visited:
+#                     visited.add(nkey)
+#                     frontier.append(nm)
+
+#     result = frozenset(visited)
+#     _silent_closure_cache[key] = result
+#     return result
+
+
+# def _labels_enabled_after_silent(m_dict: dict) -> frozenset:
+#     """
+#     Return the set of visible labels that have at least one enabled transition
+#     in any marking reachable via silent moves from m_dict.
+#     """
+#     enabled = set()
+#     for m_tup in _silent_closure(m_dict):
+#         m_tmp = dict(m_tup)
+#         for lbl, trans_list in _label_to_trans.items():
+#             if lbl not in enabled:
+#                 for t in trans_list:
+#                     if _is_enabled(m_tmp, t):
+#                         enabled.add(lbl)
+#                         break
+#     return frozenset(enabled)
 
 
 # =============================================================================
@@ -198,30 +325,24 @@ def _dict_to_marking(m_dict):
         place_by_name[name]: cnt
         for name, cnt in m_dict.items()
     })
+
 def _heuristic(m_dict: dict, pos: int, prefix: list) -> int:
     """
-    Admissible lower bound on future alignment cost for a prefix alignment.
-
-    For each remaining activity in prefix[pos:], if it cannot be executed
-    as a synchronous move from any marking reachable via silent transitions OR visible transitions
-    from m_dict or via visible transitions from m_dict, it will cost at least 1 (either a log-move, or a model-move
-    that eventually enables a sync at extra cost).
-    Counting these activities gives h ≤ true remaining cost -> admissible.
-
-    Complexity: O(|prefix[pos:]| * |silent_closure|) per call; but silent
-    closure is cached, so repeated calls with the same marking are cheaper.
+    Admissible: count remaining prefix activities that are unreachable
+    from m_dict via ANY number of tau steps.
+    
+    These can never become S moves regardless of how many taus fire,
+    so each costs at least 1 (L). This never overestimates because:
+    - if act IS reachable via taus → true cost could be 0 (S) → h ignores it ✓
+    - if act is NOT reachable via taus → true cost >= 1 → h counts 1 ✓
+    
+    Consistent because tau/S moves (cost 0) can only grow or maintain
+    the silent-reachable set, never shrink it.
     """
     if pos >= len(prefix):
         return 0
-    enabled_after_silent = _labels_enabled_after_silent(m_dict)
-    marking = _dict_to_marking(m_dict)
-    enabled_visible = _enabled_visible(net, marking)
-
-    enabled_union = enabled_after_silent | enabled_visible
-
-    # Count activities in the remaining prefix that are definitely not sync-able through silent transitions OR visible transitions
-    h = sum(1 for act in prefix[pos:] if act not in enabled_union)
-    return h
+    enabled = _labels_enabled_after_silent(m_dict)
+    return sum(1 for act in prefix[pos:] if act not in enabled)
 
 
 # =============================================================================
@@ -278,6 +399,13 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
     (path, total_cost) where path is a list of (move_type, label) pairs.
     """
     # print("prefix to align : ", prefix)
+    # debug_for_one_prefix = False
+    # if len(prefix) >= 2:
+    #     for pos in range(len(prefix)):
+            # if prefix[pos] == "Platre":
+            #     debug_for_one_prefix = True
+            #     print("prefix to align : ", prefix)
+            #     print("BEGIIIIIIIIIIIN")
     visited_states = 0
     queued_states = 1
     traversed_arcs = 0
@@ -333,12 +461,14 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
             dict_for_mem_metric["visited_states"]  =visited_states
             dict_for_mem_metric["queued_states"]  =queued_states
             dict_for_mem_metric["traversed_arcs"]  =traversed_arcs
-            
+            # if debug_for_one_prefix:
+            #     print("path : ", path)
+            #     print("ENNNNNNNNNNNNNNNNNNNNNNNNNNNNND")
             return path, g_curr, dict_for_mem_metric
 
         # ── Expand state ────────────────────────────────────────────────────
-        m_dict = dict(m_tup)
-        act    = prefix[pos] if pos < goal_pos else None
+        # m_dict = dict(m_tup)
+        # act    = prefix[pos] if pos < goal_pos else None
         
         def _push(new_m_dict: dict, new_pos: int, move_cost: int,
                   move: tuple, _s=state, _g=g_curr):
@@ -372,35 +502,89 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
                     queued_states += 1
                 except Exception as exc:
                     print("exceptionnnnn in heappush call : ", exc)
-                
-        # print("silent transitions : ", _silent_transitions)
-        # 1. Silent transitions (tau): cost 0, pos unchanged
-        for t in _silent_transitions:
-            # print("entered tau loop")
-            if _is_enabled(m_dict, t):
-                _push(_fire(m_dict, t), pos, COST_SILENT, ("tau", None))
+        # ── Expand state ─────────────────────────────────────────────────────
+        
+        m_dict = dict(m_tup)
+        act    = prefix[pos] if pos < goal_pos else None
 
-        # 2. Synchronous moves: cost 0, pos advances
+        # 1. Synchronous move
+        #    If the activity becomes fireable after some silent path,
+        #    treat it as synchronizable immediately.
         if act is not None:
-            for t in _label_to_trans.get(act, []):
-                if _is_enabled(m_dict, t):
-                    # print("entered sync case")
-                    _push(_fire(m_dict, t), pos + 1, COST_SYNC, ("S", act))
+            # if debug_for_one_prefix:
+            #     print("marking before silent path : ", m_dict)
+            silent_path, matching_t = _silent_path_to(m_dict, act)
+            # if debug_for_one_prefix:
+            #     print()
+            #     print("CURRENT MARKING :", m_dict)
+            #     print("ACT             :", act)
+            #     print("SILENT PATH     :", silent_path)
+            #     print("MATCHING T      :", matching_t)
+            
+            if matching_t is not None:
 
-        # 3. Model-only moves: cost 1, pos unchanged (fire visible t)
-        marking = _dict_to_marking(m_dict)
-        enabled_vis = _enabled_visible(net, marking)
-        for t in enabled_vis:
-            if _is_enabled(m_dict, t):
-                # print("entered Model case")
-                _push(_fire(m_dict, t), pos, COST_MODEL, ("M", t.label))
-                
-        # 4. Log-only move: cost 1, pos advances, marking unchanged
+                m_after_tau = _replay_silent_path(
+                    m_dict,
+                    silent_path
+                )
+                # if debug_for_one_prefix:
+                #     print("marking after silent path : ", m_after_tau)
+                m_after_sync = _fire(
+                    m_after_tau,
+                    matching_t
+                )
+                # if debug_for_one_prefix:
+                #     print("SYNC", act)
+                #     print("before sync:", m_after_tau)
+                #     print("after sync :", m_after_sync)
+                _push(
+                    m_after_sync,
+                    pos + 1,
+                    COST_SYNC,
+                    ("S", act)
+                )
+
+        # 2. Model-only moves
+        #    Visible labels reachable after silent transitions.
+        reachable_labels = _labels_enabled_after_silent(m_dict)
+
+        for lbl in reachable_labels:
+
+            silent_path, matching_t = _silent_path_to(
+                m_dict,
+                lbl
+            )
+
+            if matching_t is None:
+                continue
+
+            m_after_tau = _replay_silent_path(
+                m_dict,
+                silent_path
+            )
+
+            m_after_model = _fire(
+                m_after_tau,
+                matching_t
+            )
+
+            _push(
+                m_after_model,
+                pos,
+                COST_MODEL,
+                ("M", lbl)
+            )
+
+        # 3. Log-only move
         if act is not None:
-            _push(m_dict, pos + 1, COST_LOG, ("L", act))
+            _push(
+                m_dict,
+                pos + 1,
+                COST_LOG,
+                ("L", act)
+            )
 
     return [], float("inf"), dict_for_mem_metric
-
 
 # =============================================================================
 # align_prefix
@@ -545,12 +729,12 @@ for idx, trace in enumerate(neg_traces):
             "error":             result.get("error"),
 
         })
-        for step_type in rows[-1]["step_types"]:
-            if step_type == "M":
+        # for step_type in rows[-1]["step_types"]:
+        #     if step_type == "M":
 
-                print("original prefix : ", rows[-1]["prefix_activities"])
-                print("aligned prefix : ", rows[-1]["aligned_prefix"])
-                print("alignement move types : ", rows[-1]["step_types"])
+        #         print("original prefix : ", rows[-1]["prefix_activities"])
+        #         print("aligned prefix : ", rows[-1]["aligned_prefix"])
+        #         print("alignement move types : ", rows[-1]["step_types"])
 
     pd.DataFrame(rows).to_csv(
         DS_CSV, mode="a", header=write_header, index=False
