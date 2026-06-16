@@ -9,7 +9,8 @@ import numpy as np
 import pm4py
 import yaml
 from pm4py.objects.petri_net.semantics import ClassicSemantics
-
+global global_epoch
+global_epoch = 0
 # ── Load config ───────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 
@@ -90,8 +91,8 @@ def ppo_update(env, model, opt, batch):
     ret_t = torch.tensor(flat_rets, dtype=torch.float32)
     old_t = torch.tensor(flat_old,  dtype=torch.float32)
     adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
-
-    for _ in range(PPO_EPOCHS):
+    
+    for i_ppo in range(PPO_EPOCHS):
         opt.zero_grad()
         ptr        = 0
         epoch_loss = torch.tensor(0.0)     
@@ -217,11 +218,10 @@ def main():
         skipped    = 0
 
         def _flush_batch():
-            print("started ppo update")
-            nonlocal total_loss, n_updates
+            nonlocal total_loss, n_updates   
             l = ppo_update(env, model, opt, batch)
             total_loss += l
-            n_updates  += 1
+            n_updates += 1
             batch.clear()
 
         for idx, cid in enumerate(cases):
@@ -239,11 +239,15 @@ def main():
 
                 model.eval()
                 # if idx % 10 == 0:
-                print("prefix        :",  prefix)
-                print("gt labels     : ", GT_activity_labels)
-                print("gt move_types : ", GT_move_types)
+                # if len(prefix) >= 6:
+                # print("prefix        :",  prefix)
+                # print("gt labels     : ", GT_activity_labels)
+                # print("gt move_types : ", GT_move_types)
+
                 with torch.no_grad():
-                    traj, n_invalid = model.generate(src, prefix, env, vocab, max_len=MAX_STEPS)
+                    # print("begin generate")
+                    traj, n_invalid = model.generate(src, prefix, env, vocab)
+                    # print("end generate")
                 model.train()
 
                 if traj and traj['rewards']:  
@@ -252,16 +256,17 @@ def main():
                     skipped += 1
                     continue
                 # if idx % 10 == 0:
-                print("generated labels :", traj["labels_str"])
-                print("corresponding move types :", traj["moves_str"])
-                print()
+                # if len(prefix) >= 6:
+                # print("generated labels :", traj["labels_str"])
+                # print("corresponding move types :", traj["moves_str"])
 
                 if len(batch) >= BATCH_SIZE:
+                    # print("started PPO update")
                     _flush_batch()
-
+                    
+        print("finished case idx : ", idx)
         if batch:
             _flush_batch()
-
         avg_loss = total_loss / max(n_updates, 1)
         print(f"Episode {ep+1}/{EPISODES}  avg_loss={avg_loss:.4f}  "
               f"updates={n_updates}  skipped={skipped}")

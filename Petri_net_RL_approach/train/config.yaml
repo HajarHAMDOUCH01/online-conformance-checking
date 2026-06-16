@@ -54,8 +54,8 @@ phase2:
     ppo_epochs: 5
     episodes:   20
     batch_size: 8
-    max_steps:  150
-    k_train:    10
+    max_steps:  60
+    k_train:    1000
 
 phase1:
   ds_csv:           ${paths.ds_csv}
@@ -74,4 +74,4 @@ phase1:
     phase1_epochs: 10
     batch_size:    8
     max_steps:     150
-    k_train:       10
+    k_train:       1000

@@ -121,12 +121,6 @@ def _m_tuple(m_dict: dict) -> tuple:
 # =============================================================================
 # Pre-compute silent-closure reachability (for the heuristic)
 # =============================================================================
-# For the admissible heuristic we want to know, from any marking, which labels
-# could become enabled after zero or more silent transitions.
-# Pre-computing the full reachability is too expensive.  Instead we pre-compute
-# the "silent-closure" of each individual marking lazily (cached per marking).
-
-
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from pm4py.objects.petri_net.obj import Marking, PetriNet
 
@@ -137,7 +131,6 @@ from pm4py.objects.petri_net.obj import Marking, PetriNet
 _shared_closure_cache: dict = {}   # marking_tup  -> frozenset[marking_tup]
 _shared_labels_cache:  dict = {}   # marking_tup  -> frozenset[str]
 _shared_path_cache:    dict = {}   # (m_tup, lbl) -> (path, t) | (None, None)
-
 
 # =============================================================================
 # Silent-closure helpers (standalone, no class dependency)
@@ -173,7 +166,6 @@ def _silent_reachable(m_dict: dict) -> frozenset:
     _shared_closure_cache[key] = result
     return result
 
-
 def _labels_enabled_after_silent(m_dict: dict) -> frozenset:
     """
     Return frozenset of every visible label enabled in any marking
@@ -204,7 +196,6 @@ def _labels_enabled_after_silent(m_dict: dict) -> frozenset:
     result = frozenset(enabled)
     _shared_labels_cache[key] = result
     return result
-
 
 def _silent_path_to(m_dict: dict, target_label: str):
     """
@@ -249,57 +240,12 @@ def _silent_path_to(m_dict: dict, target_label: str):
     _shared_path_cache[key] = (None, None)
     return None, None
 
-
 def _replay_silent_path(m_dict: dict, silent_path: list) -> dict:
     """Fire a sequence of silent transitions and return the resulting marking dict."""
     result = dict(m_dict)
     for tau in silent_path:
         result = _fire(result, tau)
     return result
-
-
-# def _silent_closure(m_dict: dict) -> frozenset:
-#     """
-#     Return the set of all markings (as tuples) reachable from m_dict by firing
-#     only silent transitions, including m_dict itself.  Cached by marking tuple.
-#     """
-#     key = _m_tuple(m_dict)
-#     if key in _silent_closure_cache:
-#         return _silent_closure_cache[key]
-
-#     visited  = {key}
-#     frontier = [m_dict]
-#     while frontier:
-#         curr = frontier.pop()
-#         for t in _silent_transitions:
-#             if _is_enabled(curr, t):
-#                 nm   = _fire(curr, t)
-#                 nkey = _m_tuple(nm)
-#                 if nkey not in visited:
-#                     visited.add(nkey)
-#                     frontier.append(nm)
-
-#     result = frozenset(visited)
-#     _silent_closure_cache[key] = result
-#     return result
-
-
-# def _labels_enabled_after_silent(m_dict: dict) -> frozenset:
-#     """
-#     Return the set of visible labels that have at least one enabled transition
-#     in any marking reachable via silent moves from m_dict.
-#     """
-#     enabled = set()
-#     for m_tup in _silent_closure(m_dict):
-#         m_tmp = dict(m_tup)
-#         for lbl, trans_list in _label_to_trans.items():
-#             if lbl not in enabled:
-#                 for t in trans_list:
-#                     if _is_enabled(m_tmp, t):
-#                         enabled.add(lbl)
-#                         break
-#     return frozenset(enabled)
-
 
 # =============================================================================
 # heuristic 
@@ -331,7 +277,7 @@ def _heuristic(m_dict: dict, pos: int, prefix: list) -> int:
     Admissible: count remaining prefix activities that are unreachable
     from m_dict via ANY number of tau steps.
     
-    These can never become S moves regardless of how many taus fire,
+    These can never become S moves regardless of usage of tau closure,
     so each costs at least 1 (L). This never overestimates because:
     - if act IS reachable via taus → true cost could be 0 (S) → h ignores it ✓
     - if act is NOT reachable via taus → true cost >= 1 → h counts 1 ✓
@@ -349,7 +295,11 @@ def _heuristic(m_dict: dict, pos: int, prefix: list) -> int:
 # A* prefix-alignment algorithm
 # =============================================================================
 
-def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
+def _astar_prefix_alignment(
+    prefix,
+    start_marking=None,
+    start_pos=0
+):
     """
     Compute a cost-optimal prefix alignment using A*.
 
@@ -398,14 +348,6 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
     -------
     (path, total_cost) where path is a list of (move_type, label) pairs.
     """
-    # print("prefix to align : ", prefix)
-    # debug_for_one_prefix = False
-    # if len(prefix) >= 2:
-    #     for pos in range(len(prefix)):
-            # if prefix[pos] == "Platre":
-            #     debug_for_one_prefix = True
-            #     print("prefix to align : ", prefix)
-            #     print("BEGIIIIIIIIIIIN")
     visited_states = 0
     queued_states = 1
     traversed_arcs = 0
@@ -416,24 +358,30 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
     parent:  dict = {}
     dict_for_mem_metric: dict = {}
 
-    init_state = (_IM_TUPLE, 0)
-    g[init_state]      = 0
+    if start_marking is None:
+        start_marking = _IM_TUPLE
+
+    init_state = (start_marking, start_pos)
+
+    g[init_state] = 0
     parent[init_state] = None
 
     closed: set = set()
     counter     = itertools.count()
 
-    # Compute initial f = g + h
-    init_m_dict = dict(_IM_TUPLE)
-    # print("init dict : ", init_m_dict)
-    h0          = _heuristic(init_m_dict, 0, prefix)
-    # print("h0 heuristic value : ",h0)
-    heapq.heappush(heap := [], (h0, next(counter), 0, _IM_TUPLE, 0))
+    h0 = _heuristic(
+        dict(start_marking),
+        start_pos,
+        prefix
+    )
+
+    heapq.heappush(
+        heap := [],
+        (h0, next(counter), 0, start_marking, start_pos)
+    )
     
     while heap:
-        # print("entered heap")
         f, _, g_curr, m_tup, pos = heapq.heappop(heap)
-        # print("HEAP AFTER POP: ", heap)
 
         state = (m_tup, pos)
         m_dict = dict(m_tup)
@@ -450,8 +398,6 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
         visited_states += 1
         # ── Goal test ───────────────────────────────────────────────────────
         if pos == goal_pos:
-            # print("reached pos == goal_pos")
-            # Reconstruct the path
             path, cur = [], state
             while parent[cur] is not None:
                 par, mv = parent[cur]
@@ -461,14 +407,9 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
             dict_for_mem_metric["visited_states"]  =visited_states
             dict_for_mem_metric["queued_states"]  =queued_states
             dict_for_mem_metric["traversed_arcs"]  =traversed_arcs
-            # if debug_for_one_prefix:
-            #     print("path : ", path)
-            #     print("ENNNNNNNNNNNNNNNNNNNNNNNNNNNNND")
             return path, g_curr, dict_for_mem_metric
 
         # ── Expand state ────────────────────────────────────────────────────
-        # m_dict = dict(m_tup)
-        # act    = prefix[pos] if pos < goal_pos else None
         
         def _push(new_m_dict: dict, new_pos: int, move_cost: int,
                   move: tuple, _s=state, _g=g_curr):
@@ -506,20 +447,8 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
         
         m_dict = dict(m_tup)
         act    = prefix[pos] if pos < goal_pos else None
-
-        # 1. Synchronous move
-        #    If the activity becomes fireable after some silent path,
-        #    treat it as synchronizable immediately.
         if act is not None:
-            # if debug_for_one_prefix:
-            #     print("marking before silent path : ", m_dict)
             silent_path, matching_t = _silent_path_to(m_dict, act)
-            # if debug_for_one_prefix:
-            #     print()
-            #     print("CURRENT MARKING :", m_dict)
-            #     print("ACT             :", act)
-            #     print("SILENT PATH     :", silent_path)
-            #     print("MATCHING T      :", matching_t)
             
             if matching_t is not None:
 
@@ -527,16 +456,10 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
                     m_dict,
                     silent_path
                 )
-                # if debug_for_one_prefix:
-                #     print("marking after silent path : ", m_after_tau)
                 m_after_sync = _fire(
                     m_after_tau,
                     matching_t
                 )
-                # if debug_for_one_prefix:
-                #     print("SYNC", act)
-                #     print("before sync:", m_after_tau)
-                #     print("after sync :", m_after_sync)
                 _push(
                     m_after_sync,
                     pos + 1,
@@ -544,8 +467,6 @@ def _astar_prefix_alignment(prefix: list) -> tuple[list, int]:
                     ("S", act)
                 )
 
-        # 2. Model-only moves
-        #    Visible labels reachable after silent transitions.
         reachable_labels = _labels_enabled_after_silent(m_dict)
 
         for lbl in reachable_labels:

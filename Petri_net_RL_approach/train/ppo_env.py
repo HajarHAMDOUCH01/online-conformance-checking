@@ -6,9 +6,8 @@ from collections import defaultdict, deque
 import torch
 from pm4py.objects.petri_net.obj import Marking
 from pm4py.objects.petri_net.semantics import ClassicSemantics
-
+from baselines.dataset_generation_a_star import _astar_prefix_alignment
 LOOKAHEAD_LAMBDA = 0.5
-_dijkstra_counter = itertools.count()
 
 # helper used by both env and any external callers
 def _m_tuple(m_dict: dict) -> tuple:
@@ -353,18 +352,6 @@ class AlignmentEnv:
             for lbl in self.LABEL_SPACE
         ]
         result = torch.tensor(mask, dtype=torch.bool)
-        # Fallback: if everything is masked out, open all labels so the agent
-        # always has at least one valid action
-        if not result.any():
-            # Forcer log-only : seul le current activity est autorisé
-            # Si act n'est pas dans LABEL_SPACE, autoriser tous les labels
-            # mais marquer comme L obligatoire
-            if act in self.LABEL_SPACE:
-                result = torch.zeros(len(self.LABEL_SPACE), dtype=torch.bool)
-                result[self.LABEL_SPACE.index(act)] = True
-            else:
-                # Label inconnu → log-only forcé, on garde le fallback
-                result = torch.ones(len(self.LABEL_SPACE), dtype=torch.bool)
         return result
 
     # =========================================================================
@@ -374,6 +361,7 @@ class AlignmentEnv:
     def step(
         self,
         model,
+        valid_labels_mask,
         move_id:              int,
         label_id:             int,
         prev_moves:           list,
@@ -381,7 +369,6 @@ class AlignmentEnv:
         labels_logits:        torch.Tensor,
         attn_weights:         torch.Tensor,
         moves_for_all_labels: list,
-        done=False,
     ):
         """
         Execute one alignment step.
@@ -400,11 +387,26 @@ class AlignmentEnv:
           • produce the same marking as the current one (cycle)
           • deposit a token in sink0 during an M-move
         """
+        current_marking = self.marking
+        current_pos = self.pos
+        # now self.marking will get updated here and reward will take current and next is stored in the object
         move  = self.MOVE_SPACE[move_id]
         label = self.LABEL_SPACE[label_id]
 
-        if self.is_done() or done == True:
+        if self.is_done():
             return label, move, 0.0, True
+
+
+        # if self.pos == 1:
+        #     print("\nVALID ACTIONS:")
+
+        #     for label_id in torch.where(valid_labels_mask)[0].tolist():
+        #         label = self.LABEL_SPACE[label_id]
+        #         move  = self.infere_move_type(label_id)
+
+        #         print(label, move)
+
+        #     raise RuntimeError("debug")
 
         if move == "L":
             self.pos += 1
@@ -413,7 +415,7 @@ class AlignmentEnv:
             current_m   = self._marking_to_dict()
             current_tup = _m_tuple(current_m)
             fired       = False
-            print("label = ", label)
+            # print("label = ", label)
             # ------------------------------------------------------------------
             # Stage 1: direct firing
             # ------------------------------------------------------------------
@@ -432,7 +434,7 @@ class AlignmentEnv:
                 break
             if not fired:
                 silent_path, matching_t = self._silent_path_to(current_m, label)
-                print("matching t = ", matching_t)
+                # print("matching t = ", matching_t)
                 
                 if silent_path is not None and matching_t is not None:
                     target_m = self._replay_silent_path(current_m, silent_path)
@@ -455,64 +457,102 @@ class AlignmentEnv:
                         fired = True
 
             if move == "S":
-                print("pos+1")
+                # print("pos+1")
                 self.pos += 1
 
         prev_moves.append(move)
         prev_labels.append(label)
+        # print("marking of before passed to A* : ", current_marking)
+        # print("marking of after passed to A* : ", self.marking)
+        
         total_reward = self.reward_function(
             prev_moves, prev_labels, labels_logits, attn_weights,
-            moves_for_all_labels,
+            moves_for_all_labels, current_marking, current_pos
         )
+        # print("last print in def step before returning : ")
+        # print(
+        #     "pos =", self.pos,
+        #     "activity =", self.current_activity(),
+        #     "marking =", self.marking
+        # )
         return prev_labels[-1], prev_moves[-1], total_reward, self.is_done()
 
     # =========================================================================
     # Reward
     # =========================================================================
-    def reward_function(self, new_moves, new_labels, labels_logits,
-                        attention_weights_to_prefix, moves_for_all_labels):
+    # def reward_function(self, new_moves, new_labels, labels_logits,
+    #                     attention_weights_to_prefix, moves_for_all_labels):
+        
+    #     label = new_labels[-1]
+    #     move  = new_moves[-1]
+    #     step  = len(new_moves)
+    #     reward = 0.0
+
+    #     # # ── Récompense par type de move ──────────────────────────────────
+    #     if move == "S":
+    #         reward += 3.0                    # sync = parfait
+    #         # bonus si trouvé rapidement
+    #         reward += max(0, 5 - 0.5 * step)
+
+    #     elif move == "L":
+    #         reward += 1.0                    # log-only = acceptable
+
+    #     m_streak = 0
+    #     for m in reversed(new_moves):
+    #         if m == "M":
+    #             m_streak += 1
+    #         else:
+    #             break
+    #     reward -= 0.3 * (m_streak ** 2)
+
+    #     # # ── Récompense récupération après M-moves ─────────────────────────
+    #     if len(new_moves) >= 2 and new_moves[-2] == "M":
+    #         if move == "S":
+    #             reward += 2.0               # bien récupéré
+    #         elif move == "L":
+    #             reward += 0.5
+    #         elif move == "M":
+    #             reward -= 0.3               # continue à errer
+
+    #     # ── Confidence du logit ───────────────────────────────────────────
+    #     label_id    = self.LABEL_SPACE.index(label)
+    #     label_logit = torch.sigmoid(labels_logits[label_id]).item()
+    #     reward += 0.1 * label_logit
+
+    #     # ── Attention sur le préfixe ──────────────────────────────────────
+    #     attended_pos = attention_weights_to_prefix.argmax().item()
+
+    #     distance = abs(attended_pos - self.pos)
+
+    #     reward += 1.5 * (1.0 / (1.0 + distance))
+    #     return reward
+    
+    def reward_function(self,
+            new_moves, new_labels, labels_logits, attn_weights,
+            moves_for_all_labels, current_marking, current_pos
+        ):
         
         label = new_labels[-1]
         move  = new_moves[-1]
         step  = len(new_moves)
         reward = 0.0
 
-        # # ── Récompense par type de move ──────────────────────────────────
-        if move == "S":
-            reward += 3.0                    # sync = parfait
-            # bonus si trouvé rapidement
-            reward += max(0, 5 - 0.5 * step)
+        original_prefix = self.prefix
+        after_this_step_marking = self.marking
+        after_this_step_pos = self.pos
+        _, cost_before, _ = _astar_prefix_alignment(
+        prefix=original_prefix,
+        start_marking=current_marking,
+        start_pos=current_pos
+        )
+        _, cost_after, _ = _astar_prefix_alignment(
+            prefix=original_prefix,
+            start_marking=after_this_step_marking,
+            start_pos=after_this_step_pos
+        )
+        reward = float(cost_before - cost_after - 0.05)
 
-        elif move == "L":
-            reward += 1.0                    # log-only = acceptable
-
-        m_streak = 0
-        for m in reversed(new_moves):
-            if m == "M":
-                m_streak += 1
-            else:
-                break
-        reward -= 0.3 * (m_streak ** 2)
-
-        # # ── Récompense récupération après M-moves ─────────────────────────
-        if len(new_moves) >= 2 and new_moves[-2] == "M":
-            if move == "S":
-                reward += 2.0               # bien récupéré
-            elif move == "L":
-                reward += 0.5
-            elif move == "M":
-                reward -= 0.3               # continue à errer
-
-        # ── Confidence du logit ───────────────────────────────────────────
-        label_id    = self.LABEL_SPACE.index(label)
-        label_logit = torch.sigmoid(labels_logits[label_id]).item()
-        reward += 0.1 * label_logit
-
-        # ── Attention sur le préfixe ──────────────────────────────────────
-        # reward += 0.3 * attention_weights_to_prefix.max().item()
-        attended_pos = attention_weights_to_prefix.argmax().item()
-
-        distance = abs(attended_pos - self.pos)
-
-        reward += 1.5 * (1.0 / (1.0 + distance))
-        return reward
+        if after_this_step_pos == len(original_prefix):
+            reward += 10.0
+        return reward    
+        

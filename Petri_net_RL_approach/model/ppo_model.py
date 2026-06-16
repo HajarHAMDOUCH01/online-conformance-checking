@@ -5,11 +5,12 @@ class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
                  emb_dim: int = 64, hidden_dim: int = 128,
                  prefix_attn_window: float = 2.0,
+                 current_label_bias: float = 5.0,
                  m_streak_penalty: float = 1.0):
         super().__init__()
         self.emb_dim = emb_dim
         self.prefix_attn_window = prefix_attn_window
-        # self.current_label_bias = current_label_bias
+        self.current_label_bias = current_label_bias
         self.m_streak_penalty = m_streak_penalty
         self.attn_scale = hidden_dim ** -0.5
         self.emb          = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
@@ -117,10 +118,22 @@ class ActorCritic(nn.Module):
         print(f"Skipped: {skipped}")
         return ckpt['vocab']
 
-    def prefix_policy_bias(self, env, valid_label_mask: torch.Tensor,
-                           prev_moves: list[str], device) -> torch.Tensor:
+    def prefix_policy_bias(
+            self,
+            env,
+            valid_label_mask,
+            prev_moves,
+            device,
+            current_label_bias=None):
+
         bias = torch.zeros(len(env.LABEL_SPACE), device=device)
+
         act = env.current_activity()
+
+        if act in env.LABEL_ID_SPACE:
+            cb = current_label_bias if current_label_bias is not None else self.current_label_bias
+            if cb is not None:
+                bias[env.LABEL_ID_SPACE[act]] += float(cb)
 
         m_streak = 0
         for move in reversed(prev_moves):
@@ -136,7 +149,14 @@ class ActorCritic(nn.Module):
 
         return bias
     
-    def generate(self, src, prefix, env, vocab, max_len=60, train=True):
+    def generate(
+        self,
+        src,
+        prefix,
+        env,
+        vocab,
+        max_len=60,
+        train=True):
         self.train(train)
         data = dict(
             marks=[], moves=[], labels=[],
@@ -148,40 +168,51 @@ class ActorCritic(nn.Module):
         enc_out, h = self.encode(src)
         mv = env.reset(prefix)
         n_invalid = 0
-
-        for i in range(0, max_len):
-            done = False
+        done = False
+        i = 0
+        while not done:
+            
             act    = env.current_activity()
             act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
             data['act_ids'].append(act_id)
             pos = env.pos
             data['positions'].append(pos)
             label_logits, value, h, attn_weights = self.decode_step(pos, mv, h, enc_out, act_id)
-            position = 1
             moves_for_all_labels = [env.infere_move_type(i) for i in range(len(env.LABEL_SPACE))]
             data['label_logits'].append(label_logits[0]) # label_logits hsape (1, n_labels)
 
             valid_labels_mask = env.valid_label_mask()
             data['valid_label_masks'].append(valid_labels_mask.clone())
-            policy_bias = self.prefix_policy_bias(
-                env, valid_labels_mask, data['moves_str'], label_logits.device
+            policy_biais = torch.zeros(49)
+            policy_bias = torch.zeros(
+                len(env.LABEL_SPACE),
+                device=label_logits.device
             )
-            data['policy_biases'].append(policy_bias.detach().cpu())
 
+            if i == 0:
+                policy_bias = self.prefix_policy_bias(
+                    env,
+                    valid_labels_mask,
+                    data['moves_str'],
+                    label_logits.device,
+                )
+            data['policy_biases'].append(policy_bias.detach().cpu())
             ll = label_logits.clone()
             ll[0] = ll[0] + policy_bias
+            ll[0] = ll[0] 
             ll[0][~valid_labels_mask] = float('-inf') 
-            if torch.isnan(torch.softmax(ll[0], -1)).any():
-                print(f"  [WARN] NaN in softmax at step {i}, using uniform")
-                ll = torch.zeros_like(label_logits)
+
+            # debug
+            # if torch.isnan(torch.softmax(ll[0], -1)).any():
+                # print(f"  [WARN] NaN in softmax at step {i}, using uniform")
+                # ll = torch.zeros_like(label_logits)
 
             label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
-            # label      = label_dist.sample() if train else label_dist.probs.argmax()
-            label        = label_dist.probs.argmax()
+            label      = label_dist.sample() if train else label_dist.probs.argmax()
 
             old_lp = label_dist.log_prob(label).item() 
-            position = i        
             move = env.infere_move_type(label.item())
+
             ### debug
             if move == 3:
                 raise RuntimeError("move can only be L/M/S; Mask didn't work !")
@@ -189,15 +220,14 @@ class ActorCritic(nn.Module):
             move_str  = env.MOVE_SPACE[move]
             
             label_str = env.LABEL_SPACE[label]
-            label_str, move_str, reward, done = env.step(self, move, label.item(), list(data['moves']), list(data['labels']), label_logits[0], attn_weights, moves_for_all_labels, done)
+            label_str, move_str, reward, done = env.step(self, valid_labels_mask, move, label.item(), list(data['moves']), list(data['labels']), label_logits[0], attn_weights, moves_for_all_labels)
             
             label = env.LABEL_ID_SPACE[label_str]
             move = env.MOVE_ID_SPACE[move_str]
 
             data['rewards'].append(float(reward))
-            if reward == -20.0:
-                done = True
-
+            # print("DEBUG TERMINATION INSIDE GENERATE FUNCTION : \n")
+            # print(done, reward)
             new_mv = env.marking_vec()
             data['marks'].append(mv.clone())
             data['moves'].append(move)
@@ -208,19 +238,12 @@ class ActorCritic(nn.Module):
             data['values'].append(value.item())
             data['dones'].append(done)
             mv = new_mv
-
+            i += 1
+            # print("at step : ", i)
             if done:
-                # Pénaliser les trajectoires trop longues
-                n_moves    = len(data['moves'])
-                n_prefix   = len(prefix)
-                n_m_moves  = data['moves_str'].count('M')
-                
-                # ratio de M-moves : idéalement proche de 0
-                m_ratio = n_m_moves / max(n_moves, 1)
-                
-                # pénalité finale distribuée sur tous les steps
-                length_penalty = -0.5 * m_ratio
-                data['rewards'] = [r + length_penalty for r in data['rewards']]
                 break
+            # if i == max_len:
+            #     break
+        
 
         return data, n_invalid
