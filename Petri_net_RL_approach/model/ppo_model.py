@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from .dataset_utils import save_episode_transitions
 class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
                  emb_dim: int = 64, hidden_dim: int = 128,
@@ -156,7 +157,9 @@ class ActorCritic(nn.Module):
         env,
         vocab,
         max_len=60,
-        train=True):
+        train=True,
+        compute_reward=True,
+        dataset_path: str | None = None):
         self.train(train)
         data = dict(
             marks=[], moves=[], labels=[],
@@ -165,13 +168,14 @@ class ActorCritic(nn.Module):
             old_lps=[], values=[], dones=[], src_ids=src, act_ids=[],
             positions=[], valid_label_masks=[], policy_biases=[]
         )
+        episode_transitions = []
         enc_out, h = self.encode(src)
         mv = env.reset(prefix)
         n_invalid = 0
         done = False
         i = 0
         while not done:
-            
+
             act    = env.current_activity()
             act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
             data['act_ids'].append(act_id)
@@ -183,7 +187,7 @@ class ActorCritic(nn.Module):
 
             valid_labels_mask = env.valid_label_mask()
             data['valid_label_masks'].append(valid_labels_mask.clone())
-            policy_biais = torch.zeros(49)
+            policy_bias = torch.zeros(49)
             policy_bias = torch.zeros(
                 len(env.LABEL_SPACE),
                 device=label_logits.device
@@ -195,55 +199,88 @@ class ActorCritic(nn.Module):
                     valid_labels_mask,
                     data['moves_str'],
                     label_logits.device,
+                    5.0
                 )
             data['policy_biases'].append(policy_bias.detach().cpu())
             ll = label_logits.clone()
             ll[0] = ll[0] + policy_bias
-            ll[0] = ll[0] 
-            ll[0][~valid_labels_mask] = float('-inf') 
-
-            # debug
-            # if torch.isnan(torch.softmax(ll[0], -1)).any():
-                # print(f"  [WARN] NaN in softmax at step {i}, using uniform")
-                # ll = torch.zeros_like(label_logits)
+            ll[0] = ll[0]
+            ll[0][~valid_labels_mask] = float('-inf')
 
             label_dist = torch.distributions.Categorical(torch.softmax(ll[0], -1))
             label      = label_dist.sample() if train else label_dist.probs.argmax()
 
-            old_lp = label_dist.log_prob(label).item() 
+            old_lp = label_dist.log_prob(label).item()
             move = env.infere_move_type(label.item())
 
             ### debug
             if move == 3:
                 raise RuntimeError("move can only be L/M/S; Mask didn't work !")
-            
+
             move_str  = env.MOVE_SPACE[move]
-            
             label_str = env.LABEL_SPACE[label]
-            label_str, move_str, reward, done = env.step(self, valid_labels_mask, move, label.item(), list(data['moves']), list(data['labels']), label_logits[0], attn_weights, moves_for_all_labels)
-            
+
+            # --- snapshot of "generated so far" state, BEFORE this step's
+            #     action is appended to data['labels_str'] / data['moves_str'].
+            #     This is exactly what an offline / deployed policy would have
+            #     seen as input when it had to choose the current action. ---
+            # generated_labels_so_far = list(data['labels_str'])
+            # generated_moves_so_far  = list(data['moves_str'])
+            # pre_step_activity        = act
+            # pre_step_position        = pos
+
+            label_str, move_str, reward, done = env.step(
+                self, valid_labels_mask, move, label.item(),
+                list(data['moves']), list(data['labels']),
+                label_logits[0], attn_weights, moves_for_all_labels
+            )
+
             label = env.LABEL_ID_SPACE[label_str]
-            move = env.MOVE_ID_SPACE[move_str]
+            move  = env.MOVE_ID_SPACE[move_str]
 
             data['rewards'].append(float(reward))
-            # print("DEBUG TERMINATION INSIDE GENERATE FUNCTION : \n")
-            # print(done, reward)
             new_mv = env.marking_vec()
             data['marks'].append(mv.clone())
             data['moves'].append(move)
             data['labels'].append(label)
             data['moves_str'].append(move_str)
             data['labels_str'].append(label_str)
-            data['old_lps'].append(old_lp)                     
+            data['old_lps'].append(old_lp)
             data['values'].append(value.item())
             data['dones'].append(done)
+
+            # --- offline RL transition record: deployment-safe fields only.
+            #     No markings, marking vectors, valid-label masks, attention
+            #     weights, or any other Petri-net-internal information. ---
+            # episode_transitions.append({
+            #     "prefix": list(prefix),
+
+            #     "generated_labels_so_far": generated_labels_so_far,
+            #     "generated_moves_so_far":  generated_moves_so_far,
+
+            #     "current_activity": pre_step_activity,
+            #     "position": pre_step_position,
+
+            #     "action_label_id": int(label),
+            #     "action_label": label_str,
+
+            #     "action_move_id": int(move),
+            #     "action_move": move_str,
+
+            #     "reward": float(reward),
+
+            #     "done": bool(done),
+            # })
+
             mv = new_mv
             i += 1
-            # print("at step : ", i)
+            ##debug
+            if i == max_len:
+                print("at step : ", i)
             if done:
                 break
-            # if i == max_len:
-            #     break
-        
+
+        # if dataset_path is not None:
+        #     save_episode_transitions(dataset_path, episode_transitions)
 
         return data, n_invalid

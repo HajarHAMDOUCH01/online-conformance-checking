@@ -91,9 +91,7 @@ _IM_TUPLE: tuple = _marking_to_tuple(im)
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 sem = ClassicSemantics()
 enabled = sem.enabled_transitions(net, im)
-print("enabled at init:", [(t.name, t.label) for t in enabled])
-print("visible transitions:", [(t.name, t.label) for t in _visible_transitions])
-print("_in_arcs:", list(_in_arcs.items()))
+
 
 
 def _is_enabled(m_dict: dict, transition) -> bool:
@@ -598,12 +596,19 @@ for trace in log_all:
     a = float(trace.attributes.get("trace_fitness"))
     traces_fitnes_list.append(a)
 # print(traces_fitnes_list)
-threshold = 0.88
+threshold = 0.84
+
 neg_traces = [
-    trace for i, trace in enumerate(log_all) if traces_fitnes_list[i] < threshold
+    trace for i, trace in enumerate(log_all)
+    if traces_fitnes_list[i] < threshold
 ]
+
+max_trace = max(neg_traces, key=len)
+
 print(f"Total traces              : {len(log_all)}")
-print(f"Low-fitness traces {threshold} : {len(neg_traces)}")
+print(f"Low-fitness traces < {threshold} : {len(neg_traces)}")
+print(f"Maximum trace length      : {len(max_trace)}")
+print(f"Longest trace             : {max_trace}")
 
 # =============================================================================
 # Dataset generation loop

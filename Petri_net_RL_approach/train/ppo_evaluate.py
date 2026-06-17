@@ -1,174 +1,228 @@
-import ast
-import sys
-import os
+"""
+ppo_evaluate.py
+---------------
+Evaluate the PPO model on the complementary split of K_TRAIN cases.
+"""
 
-import torch
-import torch.nn as nn
-import pandas as pd
-import numpy as np
-import pm4py
+import ast
+import os
+import sys
+import time
+import signal
 import yaml
+
+import pandas as pd
+import pm4py
+import torch
 
 # ── Load config ───────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
-
 with open(_CFG_PATH, "r") as f:
     _cfg = yaml.safe_load(f)
 
 _p2    = _cfg["phase2"]
-_hp    = _p2["hyperparameters"]
 _sch   = _p2["schedule"]
 _paths = _cfg["paths"]
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT_ROOT     = _paths["project_root"]
-DS_CSV           = _paths["ds_csv"]
-PNML_PATH        = _paths["pnml_path"]
-MODEL_PHASE1_OUT = _p2["model_phase1_out"]   # checkpoint to load 
-PPO_OUT          = _p2["ppo_out"]            
+PROJECT_ROOT = _paths["project_root"]
+DS_CSV       = _paths["ds_csv"]
+PNML_PATH    = _paths["pnml_path"]
+PPO_PT       = _cfg["evaluate"]["ppo_pt"]
+EVAL_OUT_CSV = os.path.join(os.path.dirname(PPO_PT), "ppo_eval_results.csv")
+K_TRAIN      = _sch["k_train"]
+MAX_STEPS    = _sch["max_steps"]   # hard cap on decoding steps
 
-# ── PPO hyper-parameters ──────────────────────────────────────────────────────
-GAMMA    = _hp["gamma"]
-LAM      = _hp["lam"]
-CLIP     = _hp["clip"]
-ENT_COEF = _hp["ent_coef"]
-VF_COEF  = _hp["vf_coef"]
-LR       = _hp["lr"]
-MAX_GRAD = _hp["max_grad"]
-
-# ── Training schedule ─────────────────────────────────────────────────────────
-PPO_EPOCHS = _sch["ppo_epochs"]
-EPISODES   = _sch["episodes"]
-BATCH_SIZE = _sch["batch_size"]
-MAX_STEPS  = _sch["max_steps"]
-K_TRAIN    = _sch["k_train"]
-
-# ── Project path ──────────────────────────────────────────────────────────────
 sys.path.append(PROJECT_ROOT)
 
 from ppo_env import AlignmentEnv
 from model.ppo_model import ActorCritic
 from model.model import Vocab
 
-sys.modules['__main__'].Vocab    = Vocab
-sys.modules['model'].Vocab       = Vocab
-sys.modules['model.model'].Vocab = Vocab
+sys.modules["__main__"].Vocab    = Vocab
+sys.modules["model"].Vocab       = Vocab
+sys.modules["model.model"].Vocab = Vocab
 
-def validate_alignment(generated, prefix, env):
 
-    env.reset(prefix)
-    
-    n_invalid  = 0
-    log_moves  = 0
-    model_moves = 0
-    sync_moves = 0
+# ── Timeout helper (works on Windows too via threading) ───────────────────────
+import threading
 
-    for move, label in zip(generated['moves_str'], generated['labels_str']):
-        enabled_labels = env._labels_enabled_after_silent(env._marking_to_dict())
+class TimeoutError(Exception):
+    pass
 
-        if move == "S":
-            act = env.current_activity()
-            if label != act or label not in enabled_labels:
-                n_invalid += 1
-                sync_moves += 1
-            else:
-                sync_moves += 1
+def run_with_timeout(fn, args=(), kwargs={}, seconds=10):
+    """Run fn(*args, **kwargs) in a thread; raise TimeoutError if it takes too long."""
+    result    = [None]
+    exception = [None]
 
-        elif move == "M":
-            if label not in enabled_labels:
-                n_invalid += 1
-            model_moves += 1
+    def target():
+        try:
+            result[0] = fn(*args, **kwargs)
+        except Exception as e:
+            exception[0] = e
 
-        elif move == "L":
-            log_moves += 1
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout=seconds)
 
-        move_id  = env.MOVE_SPACE.index(move)
-        label_id = env.LABEL_SPACE.index(label) if label in env.LABEL_SPACE else 0
-        env.step(None, move_id, label_id, [], [], torch.zeros(len(env.LABEL_SPACE)), torch.zeros(len(prefix)), [])
+    if t.is_alive():
+        raise TimeoutError(f"generate() exceeded {seconds}s")
+    if exception[0] is not None:
+        raise exception[0]
+    return result[0]
 
-    is_valid      = (n_invalid == 0)
-    is_conforming = (log_moves == 0 and model_moves == 0)  
-    return {
-        "is_valid":      is_valid,
-        "is_conforming": is_conforming,
-        "n_invalid":     n_invalid,
-        "sync_moves":    sync_moves,
-        "model_moves":   model_moves,
-        "log_moves":     log_moves,
-        "cost":          log_moves + model_moves, 
-    }
 
-def evaluate_case(case_id, case_df, model, vocab, env):
-    case_df = case_df.sort_values("prefix_length")
-    rows    = list(case_df.iterrows())
+# ─────────────────────────────────────────────────────────────────────────────
+#  Main
+# ─────────────────────────────────────────────────────────────────────────────
 
-    print("\n" + "=" * 70)
-    print(f"CASE {case_id}")
-    print("=" * 70)
-
-    total_cost_delta = 0
-    exact_match_count = 0
-
-    for _, row in rows:
-        prefix   = row["prefix_activities"]
-        gt_cost  = int(row["cost"])
-        gt_steps = ast.literal_eval(row["step_types"]) if isinstance(row["step_types"], str) else row["step_types"]
-        gt_aligned = ast.literal_eval(row["aligned_prefix"]) if isinstance(row["aligned_prefix"], str) else row["aligned_prefix"]
-        k        = row["prefix_length"]
-
-        src_ids   = torch.tensor([vocab.encode(prefix)])
-        generated, _ = model.generate(src_ids, prefix, env, vocab)
-        val = validate_alignment(generated, prefix, env)
-
-        gen_moves  = [mv for mv in generated['moves_str']]
-        gen_labels = [label for label in generated['labels_str']]
-        gen_cost   = sum(1 for mv in gen_moves if mv != "S")
-
-        cost_delta        = gen_cost - gt_cost
-        total_cost_delta += cost_delta
-
-        moves_match  = (gen_moves == gt_steps)
-        labels_match = (gen_labels == gt_aligned)
-        exact_match  = moves_match and labels_match
-        exact_match_count += int(exact_match)
-
-        print(f"\nPrefix {k}: {prefix}")
-        print(f"  GT  steps  : {gt_steps}")
-        print(f"  GEN steps  : {gen_moves}")
-        print(f"  GT  labels : {gt_aligned}")
-        print(f"  GEN labels : {gen_labels}")
-        print(f"  Exact match    : {'YES' if exact_match  else 'NO'}")
-        print(f"  GT cost: {gt_cost}  |  GEN cost: {gen_cost}  |  Δ: {cost_delta}")
-
-    n = len(rows)
-    print("\n--- Summary ---")
-    print(f"Avg cost delta : {total_cost_delta / n:.4f}")
-    print(f"Exact match    : {exact_match_count}/{n}")
-
-K_TRAIN = 100
 def main():
-    ckpt     = torch.load(PPO_OUT, map_location="cpu", weights_only=False)
-    ckpt_phase1 = torch.load(MODEL_PHASE1_OUT, map_location="cpu", weights_only=False)
-    vocab    = ckpt["vocab"]
-
-    net, im, fm = pm4py.read_pnml(PNML_PATH)
-    labels = [t.label for t in net.transitions if t.label is not None]
-    env    = AlignmentEnv(net, im, labels)
-    model  = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
-    model.load_state_dict(ckpt["state"])
-    model.eval()
-
+    # ── Load dataset ──────────────────────────────────────────────────────────
     df = pd.read_csv(DS_CSV)
     df["prefix_activities"] = df["prefix_activities"].apply(ast.literal_eval)
     df = df[df["aligned_prefix"].notna()]
+    df["aligned_prefix"] = df["aligned_prefix"].apply(ast.literal_eval)
+    df["step_types"]     = df["step_types"].apply(ast.literal_eval)
 
-    test_cases = df["case_id"].unique()[K_TRAIN:]
-    df = df[df["case_id"].isin(test_cases)].reset_index(drop=True)
-    print(f"testing on {len(test_cases)} cases, {len(df)} rows")
+    all_cases   = df["case_id"].unique()
+    train_cases = set(all_cases[:500])
+    eval_cases  = [c for c in all_cases if c not in train_cases]
 
-    for case_id in test_cases:
-        evaluate_case(case_id, df[df["case_id"] == case_id],
-                      model, vocab, env)
+    df_eval = df[df["case_id"].isin(eval_cases)].reset_index(drop=True)
+    print(f"Eval cases  : {len(eval_cases)}")
+    print(f"Eval rows   : {len(df_eval)}")
+
+    # ── Petri net ─────────────────────────────────────────────────────────────
+    net, im, fm = pm4py.read_pnml(PNML_PATH)
+    sink_place  = next(p for p in net.places if p.name == "sink")
+    fm          = pm4py.generate_marking(net, sink_place)
+    labels      = [t.label for t in net.transitions if t.label is not None]
+    env         = AlignmentEnv(net, im, labels)
+
+    # ── Vocabulary ────────────────────────────────────────────────────────────
+    vocab = Vocab()
+    for label in env.LABEL_SPACE:
+        vocab.add(label)
+
+    # ── Load PPO model ────────────────────────────────────────────────────────
+    ckpt  = torch.load(PPO_PT, map_location="cpu", weights_only=False)
+    model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
+    model.load_state_dict(ckpt["state"], strict=True)
+    model.eval()
+    print(f"Loaded PPO weights from: {PPO_PT}")
+    
+# ── Evaluate ──────────────────────────────────────────────────────────────
+    write_header = not os.path.exists(EVAL_OUT_CSV)  # append if file already exists
+    skipped      = 0
+    timed_out    = 0
+    processed    = 0
+    total_rows   = len(df_eval)
+    t_eval_start = time.perf_counter()
+
+    os.makedirs(os.path.dirname(EVAL_OUT_CSV), exist_ok=True)
+    print(f"Writing results to: {EVAL_OUT_CSV}")
+    write_header = not os.path.exists(EVAL_OUT_CSV)
+    skipped      = 0
+    timed_out    = 0
+    processed    = 0
+    total_rows   = len(df_eval)
+    t_eval_start = time.perf_counter()
+
+    for case_id, case_df in df_eval.groupby("case_id", sort=False):
+        case_df    = case_df.sort_values("prefix_length")
+        case_start = time.perf_counter()
+        case_skip  = False
+
+        for _, row in case_df.iterrows():
+            prefix = row["prefix_activities"]
+            processed += 1
+
+            if not prefix:
+                skipped += 1
+                continue
+
+            if case_skip:
+                skipped += 1
+                continue
+
+            src = torch.tensor([vocab.encode(prefix)])
+
+            t0 = time.perf_counter()
+            try:
+                result  = run_with_timeout(
+                    fn     = model.generate,
+                    args   = (src, prefix, env, vocab),
+                    kwargs = {"train": False, "max_len": MAX_STEPS},
+                    seconds = 10
+                )
+                traj, _ = result
+                elapsed  = time.perf_counter() - t0
+
+            except TimeoutError:
+                elapsed = time.perf_counter() - t0
+                print(f"  [TIMEOUT] case={case_id}  prefix_len={len(prefix)}"
+                      f"  after {elapsed:.1f}s  → skipping rest of case")
+                timed_out += 1
+                skipped   += 1
+                case_skip  = True
+                continue
+
+            except Exception as e:
+                print(f"  [ERROR] case={case_id}  prefix_len={len(prefix)}  {e}")
+                skipped += 1
+                continue
+
+            if not traj or not traj["rewards"]:
+                skipped += 1
+                continue
+
+            moves_str  = traj["moves_str"]
+            labels_str = traj["labels_str"]
+            n_sync     = moves_str.count("S")
+            n_log      = moves_str.count("L")
+            n_model    = moves_str.count("M")
+            cost       = n_log + n_model
+
+            # ── Write immediately, one row at a time ──────────────────────────
+            pd.DataFrame([{
+                "case_id":            case_id,
+                "prefix_length":      row["prefix_length"],
+                "prefix_activities":  str(prefix),
+                "alignment_time_sec": elapsed,
+                "steps_taken":        len(moves_str),
+                "cost":               cost,
+                "sync_moves":         n_sync,
+                "log_moves":          n_log,
+                "model_moves":        n_model,
+                "is_conforming":      (cost == 0),
+                "labels_str":         str(labels_str),
+                "moves_str":          str(moves_str),
+            }]).to_csv(EVAL_OUT_CSV, mode="a", header=write_header, index=False)
+            write_header = False   # only True for the very first write
+
+            if processed % 100 == 0:
+                elapsed_total = time.perf_counter() - t_eval_start
+                rate          = processed / elapsed_total
+                remaining     = (total_rows - processed) / rate if rate > 0 else float("inf")
+                print(
+                    f"  [{processed}/{total_rows}]  "
+                    f"skipped={skipped}  timed_out={timed_out}  "
+                    f"elapsed={elapsed_total:.1f}s  "
+                    f"rate={rate:.1f} rows/s  "
+                    f"ETA={remaining:.1f}s"
+                )
+                print()
+                print("moves types : ", moves_str)
+                # print()
+
+        case_elapsed = time.perf_counter() - case_start
+        status = "SKIPPED (timeout)" if case_skip else "done"
+        print(f"Case {case_id} {status} — {len(case_df)} prefixes in {case_elapsed:.2f}s")
+
+    total_elapsed = time.perf_counter() - t_eval_start
+    print(f"\nDone.  processed={processed}  skipped={skipped}  timed_out={timed_out}")
+    print(f"Total time : {total_elapsed:.1f}s")
+    print(f"Results    -> {EVAL_OUT_CSV}")
+
 
 if __name__ == "__main__":
     main()

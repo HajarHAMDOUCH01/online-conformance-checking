@@ -9,8 +9,7 @@ import numpy as np
 import pm4py
 import yaml
 from pm4py.objects.petri_net.semantics import ClassicSemantics
-global global_epoch
-global_epoch = 0
+
 # ── Load config ───────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 
@@ -165,10 +164,10 @@ def main():
     df["aligned_prefix"] = df["aligned_prefix"].apply(ast.literal_eval)
     df["step_types"]     = df["step_types"].apply(ast.literal_eval)
 
-    train_cases = df["case_id"].unique()[:K_TRAIN]
+    train_cases = df["case_id"].unique()[:400]
     df    = df[df["case_id"].isin(train_cases)].reset_index(drop=True)
     cases = df["case_id"].unique()
-    print(f"Training phase 2 (PPO) on {len(train_cases)} cases, {len(df)} rows")
+    print(f"Training (PPO) on {len(train_cases)} cases, {len(df)} rows")
 
     # ── Environment ───────────────────────────────────────────────────────────
     net, im, fm = pm4py.read_pnml(PNML_PATH)
@@ -179,18 +178,6 @@ def main():
     print("Final marking  :", fm)
     labels      = [t.label for t in net.transitions if t.label is not None]
     env         = AlignmentEnv(net, im, labels)
-    # run this once after loading the net, before any training
-    print("Initial marking:", im)
-    print("\nEnabled at initial marking:")
-    sem = ClassicSemantics()
-    for t in sem.enabled_transitions(net, im):
-        print(f"  {t.label} ({t.name})")
-
-    print("\nAll places and their input transitions:")
-    for p in sorted(net.places, key=lambda x: x.name):
-        in_trans  = [a.source.label or a.source.name for a in net.arcs if a.target == p]
-        out_trans = [a.target.label or a.target.name for a in net.arcs if a.source == p]
-        print(f"  {p.name}: in={in_trans} out={out_trans}")
     # ── Vocabulary ────────────────────────────────────────────────────────────
     vocab = Vocab()
     for label in env.LABEL_SPACE:
@@ -244,10 +231,17 @@ def main():
                 # print("gt labels     : ", GT_activity_labels)
                 # print("gt move_types : ", GT_move_types)
 
+
                 with torch.no_grad():
-                    # print("begin generate")
-                    traj, n_invalid = model.generate(src, prefix, env, vocab)
-                    # print("end generate")
+                    traj, n_invalid = model.generate(
+                        src, prefix, env, vocab,
+                        dataset_path="offline_rl_dataset.jsonl",
+                    )
+
+                # with torch.no_grad():
+                #     # print("begin generate")
+                #     traj, n_invalid = model.generate(src, prefix, env, vocab)
+                #     # print("end generate")
                 model.train()
 
                 if traj and traj['rewards']:  
@@ -264,7 +258,7 @@ def main():
                     # print("started PPO update")
                     _flush_batch()
                     
-        print("finished case idx : ", idx)
+            print("finished case idx : ", idx)
         if batch:
             _flush_batch()
         avg_loss = total_loss / max(n_updates, 1)

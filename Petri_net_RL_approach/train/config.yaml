@@ -52,10 +52,10 @@ phase2:
   # ── Training schedule ──
   schedule:
     ppo_epochs: 5
-    episodes:   20
-    batch_size: 8
+    episodes:   10
+    batch_size: 16
     max_steps:  60
-    k_train:    1000
+    k_train:    598
 
 phase1:
   ds_csv:           ${paths.ds_csv}
@@ -74,4 +74,4 @@ phase1:
     phase1_epochs: 10
     batch_size:    8
     max_steps:     150
-    k_train:       1000
+    k_train:       598

@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 import torch
 from pm4py.objects.petri_net.obj import Marking
 from pm4py.objects.petri_net.semantics import ClassicSemantics
-from baselines.dataset_generation_a_star import _astar_prefix_alignment
+from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
 LOOKAHEAD_LAMBDA = 0.5
 
 # helper used by both env and any external callers
@@ -99,6 +99,8 @@ class AlignmentEnv:
         self.pos     = 0
         self.marking = Marking({p: v for p, v in self.im.items()})
         self._inserted_model_moves = []
+        self.steps_without_progress = 0
+        self.visited_states = {}
         # Shared caches are NOT cleared: they depend only on the net,
         # which never changes between episodes.
         return self.marking_vec()
@@ -369,7 +371,7 @@ class AlignmentEnv:
         labels_logits:        torch.Tensor,
         attn_weights:         torch.Tensor,
         moves_for_all_labels: list,
-    ):
+        compute_reward: bool = True):
         """
         Execute one alignment step.
 
@@ -465,67 +467,33 @@ class AlignmentEnv:
         # print("marking of before passed to A* : ", current_marking)
         # print("marking of after passed to A* : ", self.marking)
         
-        total_reward = self.reward_function(
-            prev_moves, prev_labels, labels_logits, attn_weights,
-            moves_for_all_labels, current_marking, current_pos
-        )
+        if compute_reward:
+            total_reward, force_done = self.reward_function(
+                prev_moves,
+                prev_labels,
+                labels_logits,
+                attn_weights,
+                moves_for_all_labels,
+                current_marking,
+                current_pos
+            )
+        else:
+            total_reward = 0.0
+
         # print("last print in def step before returning : ")
         # print(
         #     "pos =", self.pos,
         #     "activity =", self.current_activity(),
         #     "marking =", self.marking
         # )
-        return prev_labels[-1], prev_moves[-1], total_reward, self.is_done()
+        done = self.is_done() or force_done
 
-    # =========================================================================
-    # Reward
-    # =========================================================================
-    # def reward_function(self, new_moves, new_labels, labels_logits,
-    #                     attention_weights_to_prefix, moves_for_all_labels):
-        
-    #     label = new_labels[-1]
-    #     move  = new_moves[-1]
-    #     step  = len(new_moves)
-    #     reward = 0.0
-
-    #     # # ── Récompense par type de move ──────────────────────────────────
-    #     if move == "S":
-    #         reward += 3.0                    # sync = parfait
-    #         # bonus si trouvé rapidement
-    #         reward += max(0, 5 - 0.5 * step)
-
-    #     elif move == "L":
-    #         reward += 1.0                    # log-only = acceptable
-
-    #     m_streak = 0
-    #     for m in reversed(new_moves):
-    #         if m == "M":
-    #             m_streak += 1
-    #         else:
-    #             break
-    #     reward -= 0.3 * (m_streak ** 2)
-
-    #     # # ── Récompense récupération après M-moves ─────────────────────────
-    #     if len(new_moves) >= 2 and new_moves[-2] == "M":
-    #         if move == "S":
-    #             reward += 2.0               # bien récupéré
-    #         elif move == "L":
-    #             reward += 0.5
-    #         elif move == "M":
-    #             reward -= 0.3               # continue à errer
-
-    #     # ── Confidence du logit ───────────────────────────────────────────
-    #     label_id    = self.LABEL_SPACE.index(label)
-    #     label_logit = torch.sigmoid(labels_logits[label_id]).item()
-    #     reward += 0.1 * label_logit
-
-    #     # ── Attention sur le préfixe ──────────────────────────────────────
-    #     attended_pos = attention_weights_to_prefix.argmax().item()
-
-    #     distance = abs(attended_pos - self.pos)
-
-    #     reward += 1.5 * (1.0 / (1.0 + distance))
-    #     return reward
+        return (
+            prev_labels[-1],
+            prev_moves[-1],
+            total_reward,
+            done
+        )
     
     def reward_function(self,
             new_moves, new_labels, labels_logits, attn_weights,
@@ -550,9 +518,40 @@ class AlignmentEnv:
             start_marking=after_this_step_marking,
             start_pos=after_this_step_pos
         )
+        if cost_after < cost_before:
+            self.steps_without_progress = 0
+        else:
+            self.steps_without_progress += 1
         reward = float(cost_before - cost_after - 0.05)
+        reward -= 0.1 * self.steps_without_progress
+        state_key = (
+            after_this_step_pos,
+            tuple(sorted(_m_tuple(after_this_step_marking)))
+        )
 
+        visits = self.visited_states.get(state_key, 0)
+        self.visited_states[state_key] = (
+            self.visited_states.get(state_key, 0) + 1
+        )
+
+        visits = self.visited_states[state_key]
+
+        reward -= 0.5 * (visits - 1)
+
+        terminate = False
+        if self.steps_without_progress >= 10:
+            reward -= 10.0
+            terminate = True
         if after_this_step_pos == len(original_prefix):
             reward += 10.0
-        return reward    
+            terminate = True
+
+        # print(
+        #     "cost_before =", cost_before,
+        #     "cost_after =", cost_after,
+        #     "no_progress =", self.steps_without_progress,
+        #     "visits =", visits,
+        #     "reward =", reward
+        # )
+        return reward, terminate
         
