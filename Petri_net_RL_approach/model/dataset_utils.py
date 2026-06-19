@@ -1,12 +1,8 @@
 """
 dataset_utils.py
-
+For trying offline reinforcement learning model later
 Helper for persisting offline-RL transition records collected from
-AlignmentEnv rollouts. Designed for:
-  - millions of transitions (append-only, no full-file rewrite)
-  - safety against torch.Tensor / numpy scalars / numpy arrays leaking
-    into the JSON (which would crash json.dumps or silently store
-    non-portable objects)
+AlignmentEnv rollouts.
 """
 
 from __future__ import annotations
@@ -18,11 +14,6 @@ import torch
 
 
 def _to_native(obj):
-    """
-    Recursively convert torch.Tensor / numpy types / numpy arrays into
-    plain Python int/float/list/dict so json.dumps never chokes and the
-    on-disk format has zero framework dependencies.
-    """
     if isinstance(obj, torch.Tensor):
         return _to_native(obj.detach().cpu().tolist())
     if isinstance(obj, np.ndarray):
@@ -43,7 +34,7 @@ def _to_native(obj):
 def save_episode_transitions(path: str, episode_transitions: list[dict]) -> None:
     """
     Append a list of transition dicts to a JSONL file, one JSON object
-    per line. Safe to call once per episode (recommended) rather than
+    per line. Safe to call once per episode rather than
     once per step, to minimize file-open overhead across millions of
     transitions.
     """

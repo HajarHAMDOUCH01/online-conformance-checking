@@ -6,7 +6,12 @@ class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
                  emb_dim: int = 64, hidden_dim: int = 128,
                  prefix_attn_window: float = 2.0,
-                 current_label_bias: float = 5.0,
+
+                # for the first generation activity , 
+                #the model doesn't always take it because it uses samplinga nyway , 
+                # but helps guide training teh agent early in training
+                 current_label_bias: float = 5.0, 
+                 
                  m_streak_penalty: float = 1.0):
         super().__init__()
         self.emb_dim = emb_dim
