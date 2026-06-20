@@ -9,7 +9,14 @@ class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
                  emb_dim: int = 64, hidden_dim: int = 128,
                  prefix_attn_window: float = 2.0,
-                 current_label_bias: float = 50.0,
+
+                 # this makes the agent choose the first activity in the prefix, 
+                 # without it it starts away from the prefix and gets lost and this prevents training , 
+                 # training uses sampling anywway , so sometimes it still starts with an M move away from prefix 
+                 # and learns from its actions
+                 current_label_bias: float = 50.0, 
+                 
+                  
                  m_streak_penalty: float = 2.0,
                  max_loop_depth: int = 4): 
         super().__init__()
@@ -298,8 +305,8 @@ class ActorCritic(nn.Module):
 
             if i == max_len:
                 print("at step, NOT forced to stop: ", i)
-            if i >= max_len:
-                done = True    
+            # if i >= max_len:
+            #     done = True    
             if done:
                 break
 

@@ -430,6 +430,7 @@ class AlignmentEnv:
         # the loop, paired with the loop_depth feature so the policy can
         # learn WHEN to diversify (high depth) vs exploit (depth 0).
         # ------------------------------------------------------------------
+        terminate = False
         # revisit penalty
         reward -= 1.0 * (new_visit_count - 1)
 
