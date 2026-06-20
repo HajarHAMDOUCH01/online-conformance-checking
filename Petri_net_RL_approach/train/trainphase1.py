@@ -1,14 +1,16 @@
 import ast
 import sys
 import os
- 
+
 import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
 import pm4py
 import yaml
- 
+
+# this code is not currently used
+
 # ── Load config ───────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
  

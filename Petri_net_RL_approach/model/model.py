@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+# this code is not currently used 
 PAD, SOS, EOS, UNK = "<PAD>", "<SOS>", "<EOS>", "<UNK>"
 
 
