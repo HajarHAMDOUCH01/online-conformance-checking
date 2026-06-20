@@ -409,10 +409,10 @@ class AlignmentEnv:
 
         print("after_marking type:", type(after_this_step_marking))
         print("after_marking:", after_this_step_marking)
-        start_marking = _m_tuple(
+        current_marking = _m_tuple(
         normalize_marking(current_marking)
     )
-        start_marking = _m_tuple(
+        after_this_step_marking = _m_tuple(
         normalize_marking(after_this_step_marking)
     )
         alignment_before, cost_before, _ = _astar_prefix_alignment(
