@@ -363,8 +363,8 @@ def _astar_prefix_alignment(
     # print("start_marking =", start_marking)
     # print("start_pos =", start_pos)
 
-    print(type(start_marking))
-    print(start_marking)
+    # print(type(start_marking))
+    # print(start_marking)
     init_state = (start_marking, start_pos)
 
     g[init_state] = 0
