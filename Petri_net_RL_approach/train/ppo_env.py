@@ -507,12 +507,12 @@ class AlignmentEnv:
         # reward -= 0.2 * self.steps_without_progress
 
         # catastrophic loop
-        if new_visit_count >= 8:
-            reward -= 10
+        # if new_visit_count >= 8:
+        #     reward -= 10
 
-        # catastrophic stagnation
-        if self.steps_without_progress >= 8:
-            reward -= 10
+        # # catastrophic stagnation
+        # if self.steps_without_progress >= 8:
+        #     reward -= 10
 
         # completion
         if after_this_step_pos == len(original_prefix):
@@ -528,5 +528,4 @@ class AlignmentEnv:
         #     reward
         # )
 
-        reward -= 0.02 # for prioritising shorter paths 
         return reward, terminate
