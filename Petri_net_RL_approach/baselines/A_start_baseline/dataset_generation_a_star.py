@@ -359,6 +359,7 @@ def _astar_prefix_alignment(
     if start_marking is None:
         start_marking = _IM_TUPLE
 
+
     if isinstance(start_marking, dict):
         start_marking = _m_tuple(start_marking)
 
