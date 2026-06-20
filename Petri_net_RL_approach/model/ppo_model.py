@@ -1,9 +1,27 @@
 import torch
 import torch.nn as nn
-
+import pm4py 
+from pm4py.objects.petri_net.obj import Marking
 from .dataset_utils import save_episode_transitions
 from train.ppo_env import _m_tuple   
+from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
 
+def normalize_marking_tuple(marking):
+
+    if isinstance(marking, tuple):
+        return marking
+
+    if isinstance(marking, dict):
+        return _m_tuple(marking)
+
+    if isinstance(marking, Marking):
+        return _m_tuple({
+            p.name:v
+            for p,v in marking.items()
+            if v > 0
+        })
+
+    raise TypeError(type(marking))
 
 class ActorCritic(nn.Module):
     def __init__(self, vocab_size: int, n_places: int, n_labels: int,
@@ -25,6 +43,7 @@ class ActorCritic(nn.Module):
         self.m_streak_penalty = m_streak_penalty
         self.max_loop_depth = max_loop_depth
         self.attn_scale = hidden_dim ** -0.5
+        self.cost_emb = nn.Embedding(100, emb_dim)
 
         self.emb          = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
         self.enc          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
@@ -32,7 +51,11 @@ class ActorCritic(nn.Module):
 
         # fuse_proj now takes 4 × emb_dim:
         #   marking_emb | activity_emb | pos_emb | loop_depth_emb
-        self.fuse_proj    = nn.Linear(emb_dim * 4, emb_dim, bias=False)
+        self.fuse_proj = nn.Linear(
+            emb_dim * 5,
+            emb_dim,
+            bias=False
+        )
 
         self.dec          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
         self.pos_emb      = nn.Embedding(70, emb_dim)
@@ -54,6 +77,11 @@ class ActorCritic(nn.Module):
         nn.init.zeros_(self.label_head.bias)
         nn.init.zeros_(self.critic.bias)
         nn.init.orthogonal_(self.fuse_proj.weight)
+        nn.init.normal_(
+            self.cost_emb.weight,
+            mean=0.0,
+            std=0.01
+        )
         # loop_depth_emb: initialise with small normal so depth=0 starts near zero
         nn.init.normal_(self.loop_depth_emb.weight, mean=0.0, std=0.01)
 
@@ -63,9 +91,16 @@ class ActorCritic(nn.Module):
         return enc_out, h
 
     # -------------------------------------------------------------------------
-    def decode_step(self, pos, mv: torch.Tensor, h: torch.Tensor,
-                    enc_out: torch.Tensor, act_id: int = 0,
-                    loop_depth: int = 0):          
+    def decode_step(
+        self,
+        pos,
+        mv,
+        h,
+        enc_out,
+        act_id=0,
+        loop_depth=0,
+        remaining_cost=0
+    ):       
         """
         One decoder step.
 
@@ -88,9 +123,22 @@ class ActorCritic(nn.Module):
         depth_emb = self.loop_depth_emb(
             torch.tensor([[depth_id]], device=device)
         )                                                              # (1,1,E)
+        cost_id = min(
+            remaining_cost,
+            self.cost_emb.num_embeddings - 1
+        )
 
+        cost_emb = self.cost_emb(
+            torch.tensor([[cost_id]], device=device)
+        )
         inp = self.fuse_proj(
-            torch.cat([marking_emb, activity_emb, pos_emb, depth_emb], dim=-1)
+            torch.cat([
+                marking_emb,
+                activity_emb,
+                pos_emb,
+                depth_emb,
+                cost_emb
+            ], dim=-1)        
         )                                                              # (1,1,E)
 
         out, new_h = self.dec(inp, h)
@@ -140,8 +188,9 @@ class ActorCritic(nn.Module):
             'dec.bias_ih_l0':    'dec.bias_ih_l0',
             'dec.bias_hh_l0':    'dec.bias_hh_l0',
         }
-        print("Note: fuse_proj and loop_depth_emb initialised from scratch")
-
+        print(
+        "Note: fuse_proj, loop_depth_emb and cost_emb initialized from scratch"
+        )
         loaded, skipped = [], []
         for k, v in src.items():
             mapped = key_map.get(k, k)
@@ -202,7 +251,7 @@ class ActorCritic(nn.Module):
             label_logits=[], rewards=[],
             old_lps=[], values=[], dones=[], src_ids=src, act_ids=[],
             positions=[], valid_label_masks=[], policy_biases=[],
-            loop_depths=[],    
+            loop_depths=[], costs=[] 
         )
         enc_out, h = self.encode(src)
         mv = env.reset(prefix)
@@ -223,6 +272,17 @@ class ActorCritic(nn.Module):
             data['act_ids'].append(act_id)
             pos = env.pos
 
+            current_marking = normalize_marking_tuple(
+                env._marking_to_dict()
+            )
+
+            _, remaining_cost, _ = _astar_prefix_alignment(
+                prefix=prefix,
+                start_marking=current_marking,
+                start_pos=pos
+            )
+            cost_id = min(int(remaining_cost), 99)
+
             # --- compute loop_depth BEFORE incrementing the counter --------
             # loop_depth = how many times we've already been in this state
             # before the current step, i.e. the count *prior* to this visit.
@@ -241,7 +301,13 @@ class ActorCritic(nn.Module):
             data['loop_depths'].append(loop_depth)   # store for replay
 
             label_logits, value, h, attn_weights = self.decode_step(
-                pos, mv, h, enc_out, act_id, loop_depth=loop_depth
+                pos,
+                mv,
+                h,
+                enc_out,
+                act_id,
+                loop_depth=loop_depth,
+                remaining_cost=cost_id
             )
             moves_for_all_labels = [env.infere_move_type(i)
                                      for i in range(len(env.LABEL_SPACE))]
@@ -298,6 +364,7 @@ class ActorCritic(nn.Module):
             data['old_lps'].append(old_lp)
             data['values'].append(value.item())
             data['dones'].append(done)
+            data['costs'].append(remaining_cost)
 
             mv = new_mv
             i += 1
