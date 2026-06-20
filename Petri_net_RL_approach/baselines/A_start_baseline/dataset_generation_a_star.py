@@ -29,7 +29,7 @@ XES_PATH         = _paths["xes_path"]
 
 # ── Move costs  ──────────────────────
 COST_SYNC  = 0   # synchronous move  - log and model agree
-COST_LOG   = 1   # log-only move     - event in log, not in model
+COST_LOG   = 2   # log-only move     - event in log, not in model
 COST_MODEL = 1   # model-only move   - transition fired, no log event
 COST_SILENT = 0  # silent (tau) transition - always free
 
@@ -358,15 +358,15 @@ def _astar_prefix_alignment(
 
     if start_marking is None:
         start_marking = _IM_TUPLE
-        # print("IM type =", type(_IM_TUPLE))
-        # print("IM =", _IM_TUPLE)
-    # print("start_marking =", start_marking)
-    # print("start_pos =", start_pos)
 
-    # print(type(start_marking))
-    # print(start_marking)
+    if isinstance(start_marking, dict):
+        start_marking = _m_tuple(start_marking)
+
+    elif isinstance(start_marking, Marking):
+        start_marking = _m_tuple(
+            {p.name:v for p,v in start_marking.items() if v > 0}
+        )
     init_state = (start_marking, start_pos)
-
     g[init_state] = 0
     parent[init_state] = None
 

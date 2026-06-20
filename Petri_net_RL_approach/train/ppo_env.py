@@ -312,7 +312,8 @@ class AlignmentEnv:
                     continue
                 if self._sink_place_name in new_m and move == "M":
                     continue
-                self.marking = self.sem.weak_execute(t, self.net, self.marking)
+                self.marking = new_m
+                # self.marking = self.sem.weak_execute(t, self.net, self.marking)
                 fired = True
                 break
 
@@ -327,13 +328,22 @@ class AlignmentEnv:
                         self._sink_place_name not in new_m or move != "M"
                     )
                     if valid:
-                        for tau in silent_path:
-                            self.marking = self.sem.weak_execute(
-                                tau, self.net, self.marking
-                            )
-                        self.marking = self.sem.weak_execute(
-                            matching_t, self.net, self.marking
+                        target_m = self._replay_silent_path(
+                        current_m,
+                        silent_path
+                    )
+
+                        self.marking = self._fire(
+                            target_m,
+                            matching_t
                         )
+                        # for tau in silent_path:
+                        #     self.marking = self.sem.weak_execute(
+                        #         tau, self.net, self.marking
+                        #     )
+                        # self.marking = self.sem.weak_execute(
+                        #     matching_t, self.net, self.marking
+                        # )
                         fired = True
 
             if move == "S":
