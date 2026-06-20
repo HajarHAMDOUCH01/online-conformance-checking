@@ -14,6 +14,7 @@ import yaml
 import pandas as pd
 import pm4py
 import torch
+from pm4py.objects.log.importer.xes import importer as xes_importer
 
 # ── Load config ───────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -28,10 +29,10 @@ PROJECT_ROOT = _paths["project_root"]
 DS_CSV       = _paths["ds_csv"]
 PNML_PATH    = _paths["pnml_path"]
 PPO_PT       = _cfg["evaluate"]["ppo_pt"]
-EVAL_OUT_CSV = os.path.join(os.path.dirname(PPO_PT), "ppo_eval_results.csv")
+EVAL_OUT_CSV = os.path.join(os.path.dirname(PPO_PT), "/ppo_eval_results.csv")
 K_TRAIN      = _sch["k_train"]
 MAX_STEPS    = _sch["max_steps"]   # hard cap on decoding steps
-
+XES_PATH         = _paths["xes_path"]
 sys.path.append(PROJECT_ROOT)
 
 from ppo_env import AlignmentEnv
@@ -77,20 +78,34 @@ def run_with_timeout(fn, args=(), kwargs={}, seconds=10):
 
 def main():
     # ── Load dataset ──────────────────────────────────────────────────────────
-    df = pd.read_csv(DS_CSV)
+    df = pd.read_csv(DS_CSV, dtype={"case_id": str})
     df["prefix_activities"] = df["prefix_activities"].apply(ast.literal_eval)
     df = df[df["aligned_prefix"].notna()]
     df["aligned_prefix"] = df["aligned_prefix"].apply(ast.literal_eval)
     df["step_types"]     = df["step_types"].apply(ast.literal_eval)
 
-    all_cases   = df["case_id"].unique()
-    train_cases = set(all_cases[:500])
-    eval_cases  = [c for c in all_cases if c not in train_cases]
+    log_all = xes_importer.apply(XES_PATH)
+    traces_fitnes_list = [
+        float(trace.attributes.get("trace_fitness"))
+        for trace in log_all
+    ]
 
-    df_eval = df[df["case_id"].isin(eval_cases)].reset_index(drop=True)
-    print(f"Eval cases  : {len(eval_cases)}")
-    print(f"Eval rows   : {len(df_eval)}")
+    threshold = 0.9
+    eval_cases = [
+        trace for i, trace in enumerate(log_all)
+        if 0.85 < traces_fitnes_list[i] < threshold
+    ]
+    print(f"{len(eval_cases)} traces in (0.85, {threshold}) out of {len(log_all)} total")
 
+    eval_cases_ids = {
+        str(trace.attributes["concept:name"]).strip()
+        for trace in eval_cases
+    }
+    df["case_id"] = df["case_id"].str.strip()
+
+    df_eval = df[df["case_id"].isin(eval_cases_ids)].reset_index(drop=True)
+    cases   = df_eval["case_id"].unique()
+    print(f"Evaluating (PPO) on {len(cases)} cases, {len(df_eval)} rows")
     # ── Petri net ─────────────────────────────────────────────────────────────
     net, im, fm = pm4py.read_pnml(PNML_PATH)
     sink_place  = next(p for p in net.places if p.name == "sink")
@@ -109,7 +124,9 @@ def main():
     model.load_state_dict(ckpt["state"], strict=True)
     model.eval()
     print(f"Loaded PPO weights from: {PPO_PT}")
-    
+    @torch.no_grad()
+    def generate_eval(*args, **kwargs):
+        return model.generate(*args, **kwargs)
 # ── Evaluate ──────────────────────────────────────────────────────────────
     write_header = not os.path.exists(EVAL_OUT_CSV)  # append if file already exists
     skipped      = 0
@@ -134,6 +151,8 @@ def main():
 
         for _, row in case_df.iterrows():
             prefix = row["prefix_activities"]
+            GT_activity_labels = row['aligned_prefix'] 
+            GT_move_types     = row['step_types']
             processed += 1
 
             if not prefix:
@@ -149,9 +168,9 @@ def main():
             t0 = time.perf_counter()
             try:
                 result  = run_with_timeout(
-                    fn     = model.generate,
-                    args   = (src, prefix, env, vocab),
-                    kwargs = {"train": False, "max_len": MAX_STEPS},
+                    fn      = generate_eval,                 # was: model.generate
+                    args    = (src, prefix, env, vocab),
+                    kwargs  = {"train": False, "compute_reward": False, "max_len": MAX_STEPS},
                     seconds = 10
                 )
                 traj, _ = result
@@ -211,12 +230,16 @@ def main():
                     f"ETA={remaining:.1f}s"
                 )
                 print()
-                print("moves types : ", moves_str)
+                print("ground truth moves types : ", GT_move_types)
+                print("ground truth activity labels : ", prefix)
+                
+                print(" moves types : ", moves_str)
+                print("generated activity labels  : ",labels_str)
                 # print()
 
         case_elapsed = time.perf_counter() - case_start
-        status = "SKIPPED (timeout)" if case_skip else "done"
-        print(f"Case {case_id} {status} — {len(case_df)} prefixes in {case_elapsed:.2f}s")
+        # status = "SKIPPED (timeout)" if case_skip else "done"
+        # print(f"Case {case_id} {status} — {len(case_df)} prefixes in {case_elapsed:.2f}s")
 
     total_elapsed = time.perf_counter() - t_eval_start
     print(f"\nDone.  processed={processed}  skipped={skipped}  timed_out={timed_out}")

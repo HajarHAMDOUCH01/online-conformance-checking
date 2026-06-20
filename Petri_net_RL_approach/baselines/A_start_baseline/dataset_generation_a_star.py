@@ -13,7 +13,7 @@ from pm4py.objects.petri_net.obj import PetriNet
 from pm4py.objects.log.importer.xes import importer as xes_importer
 
 # ── Load config ───────────────────────────────────────────────────────────────
-_CFG_PATH = r"C:\Users\LENONVO\OneDrive\Desktop\model\Petri_net_RL_approach\train\config.yaml"
+_CFG_PATH = "/content/online-conformance-checking/Petri_net_RL_approach/train/config.yaml"
 
 with open(_CFG_PATH, "r") as f:
     _cfg = yaml.safe_load(f)
@@ -596,7 +596,7 @@ for trace in log_all:
     a = float(trace.attributes.get("trace_fitness"))
     traces_fitnes_list.append(a)
 # print(traces_fitnes_list)
-threshold = 0.84
+threshold = 0.85
 
 neg_traces = [
     trace for i, trace in enumerate(log_all)

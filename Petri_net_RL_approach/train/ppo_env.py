@@ -9,7 +9,7 @@ from pm4py.objects.petri_net.semantics import ClassicSemantics
 from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
 LOOKAHEAD_LAMBDA = 0.5
 
-# helper used by both env and any external callers
+# helper used by both env and any external callers (including ppo_model.generate)
 def _m_tuple(m_dict: dict) -> tuple:
     """
     Convert a marking dict to a canonical, hashable, sorted tuple.
@@ -28,28 +28,10 @@ def _m_tuple(m_dict: dict) -> tuple:
 class AlignmentEnv:
     """
     RL environment for computing prefix alignments over a Petri net.
-
-    Silent-transitions : 
-    ------------------------
-    Three class-level caches persist across all episodes and all env
-    instances that share the same Petri net.  
-    They are keyed by marking tuple; which depends only on net structure.
-
-    _shared_closure_cache : marking_tup -> frozenset[marking_tup]
-        Every marking reachable from a given marking via silent
-        transitions
-
-    _shared_labels_cache  : marking_tup -> frozenset[str]
-        Every visible label enabled in any reachable marking.
-
-    _shared_path_cache    : (marking_tup, label_str) -> (path, t) | (None, None)
-        The shortest silent-transition path (BFS order) that makes
-        label_str fireable, together with the matching visible transition.
-        Early-terminates as soon as the label is found
     """
-    _shared_closure_cache: dict = {}   # marking_tup  -> frozenset[marking_tup]
-    _shared_labels_cache:  dict = {}   # marking_tup  -> frozenset[str]
-    _shared_path_cache:    dict = {}   # (m_tup, lbl) -> (path, t) | (None, None)
+    _shared_closure_cache: dict = {}
+    _shared_labels_cache:  dict = {}
+    _shared_path_cache:    dict = {}
 
     # =========================================================================
     # Construction
@@ -60,8 +42,8 @@ class AlignmentEnv:
         self.im  = im
         self.sem = ClassicSemantics()
 
-        self.MOVE_SPACE  = ["S", "M", "L"]
-        self.LABEL_SPACE = list(labels)
+        self.MOVE_SPACE     = ["S", "M", "L"]
+        self.LABEL_SPACE    = list(labels)
         self.MOVE_ID_SPACE  = {move: i  for i, move  in enumerate(self.MOVE_SPACE)}
         self.ID_LABEL_SPACE = {i: label for i, label in enumerate(self.LABEL_SPACE)}
         self.LABEL_ID_SPACE = {label: i for i, label in enumerate(self.LABEL_SPACE)}
@@ -71,8 +53,8 @@ class AlignmentEnv:
         self.place_idx  = {p: i for i, p in enumerate(self.place_list)}
         self.n_places   = len(self.place_list)
 
-        self._in_arcs:  dict = defaultdict(list)   # transition -> [(place_name, weight)]
-        self._out_arcs: dict = defaultdict(list)   # transition -> [(place_name, weight)]
+        self._in_arcs:  dict = defaultdict(list)
+        self._out_arcs: dict = defaultdict(list)
         places      = set(net.places)
         transitions = set(net.transitions)
         for arc in net.arcs:
@@ -101,8 +83,6 @@ class AlignmentEnv:
         self._inserted_model_moves = []
         self.steps_without_progress = 0
         self.visited_states = {}
-        # Shared caches are NOT cleared: they depend only on the net,
-        # which never changes between episodes.
         return self.marking_vec()
 
     def marking_vec(self) -> torch.Tensor:
@@ -123,17 +103,12 @@ class AlignmentEnv:
     # =========================================================================
 
     def _is_enabled(self, m_dict: dict, transition) -> bool:
-        """True iff all input-arc token requirements of transition are satisfied."""
         return all(
             m_dict.get(pname, 0) >= w
             for pname, w in self._in_arcs[transition]
         )
 
     def _fire(self, m_dict: dict, transition) -> dict:
-        """
-        Return a new marking dict after firing transition.
-        Does not mutate the input dict.
-        """
         result = dict(m_dict)
         for pname, w in self._in_arcs[transition]:
             result[pname] = result.get(pname, 0) - w
@@ -144,14 +119,12 @@ class AlignmentEnv:
         return result
 
     def _marking_to_dict(self) -> dict:
-        """Convert self.marking (pm4py Marking, Place-keyed) to a str-keyed dict."""
         return {p.name: v for p, v in self.marking.items() if v > 0}
 
     def _pm4py_marking_to_name_dict(self, marking) -> dict:
         return {p.name: cnt for p, cnt in marking.items() if cnt > 0}
 
     def _enabled_visible(self) -> set:
-        """Labels of all currently enabled visible transitions."""
         return {
             t.label
             for t in self.sem.enabled_transitions(self.net, self.marking)
@@ -159,7 +132,6 @@ class AlignmentEnv:
         }
 
     def real_enabled_visible(self) -> list:
-        """All currently enabled visible transition *objects*."""
         return [
             t for t in self.sem.enabled_transitions(self.net, self.marking)
             if t.label is not None
@@ -170,13 +142,6 @@ class AlignmentEnv:
     # =========================================================================
 
     def _silent_reachable(self, m_dict: dict) -> frozenset:
-        """
-        Return a frozenset of every marking-tuple reachable from m_dict by
-        firing zero or more silent transitions (m_dict itself is included).
-
-        Stored in _shared_closure_cache.  At most one BFS per unique marking
-        for the lifetime of the process.
-        """
         key    = _m_tuple(m_dict)
         cached = AlignmentEnv._shared_closure_cache.get(key)
         if cached is not None:
@@ -199,16 +164,6 @@ class AlignmentEnv:
         return result
 
     def _labels_enabled_after_silent(self, m_dict: dict) -> frozenset:
-        """
-        Return frozenset of every visible label enabled in any marking
-        reachable from m_dict via silent transitions (m_dict itself included).
-
-        Stored in _shared_labels_cache.  Built on top of _silent_reachable,
-        so both caches benefit from each other.
-
-        Accepts both Place-keyed (pm4py Marking) and str-keyed dicts.
-        """
-        # Normalise to str-keyed dict
         if m_dict and hasattr(next(iter(m_dict)), "name"):
             m_dict = {p.name: v for p, v in m_dict.items() if v > 0}
 
@@ -235,41 +190,23 @@ class AlignmentEnv:
     def _silent_path_to(
         self, m_dict: dict, target_label: str
     ) -> tuple[list, object] | tuple[None, None]:
-        """
-        Targeted BFS over silent transitions.
-
-        Terminates as soon as target_label becomes fireable
-
-        Returns
-        -------
-        (silent_path, matching_transition)
-            silent_path is the ordered list of silent transitions to fire
-            before matching_transition.  An empty list means target_label
-            is already enabled at m_dict with no silent preamble needed.
-        (None, None)
-            target_label is unreachable via any sequence of silent moves.
-
-        Stored in _shared_path_cache keyed by (marking_tup, target_label).
-        """
         key    = (_m_tuple(m_dict), target_label)
         cached = AlignmentEnv._shared_path_cache.get(key)
         if cached is not None:
             return cached
 
         visited = {_m_tuple(m_dict)}
-        queue   = deque([(m_dict, [])])   # (current_marking_dict, path_so_far)
+        queue   = deque([(m_dict, [])])
 
         while queue:
             curr, path = queue.popleft()
 
-            # Check if target_label is fireable at this intermediate marking
             for t in self._label_to_trans.get(target_label, []):
                 if self._is_enabled(curr, t):
                     result = (path, t)
                     AlignmentEnv._shared_path_cache[key] = result
                     return result
 
-            # Expand via silent transitions
             for tau in self._silent_transitions:
                 if self._is_enabled(curr, tau):
                     nm  = self._fire(curr, tau)
@@ -282,10 +219,6 @@ class AlignmentEnv:
         return None, None
 
     def _replay_silent_path(self, m_dict: dict, silent_path: list) -> dict:
-        """
-        Fire a sequence of silent transitions from m_dict and return the
-        resulting marking dict.  Does not touch self.marking.
-        """
         result = dict(m_dict)
         for tau in silent_path:
             result = self._fire(result, tau)
@@ -296,41 +229,20 @@ class AlignmentEnv:
     # =========================================================================
 
     def infere_move_type(self, label) -> int:
-        """
-        Infer move type for label given the current marking and prefix position.
-
-          0  S  synchronous  — label == current activity AND label is enabled
-          1  M  model-only   — label != current activity AND label is enabled
-          2  L  log-only     — label == current AND label is not enabled 
-
-        Uses a single cached _labels_enabled_after_silent call.
-        """
         label_str   = self.LABEL_SPACE[label] if isinstance(label, int) else label
         act         = self.current_activity()
         m_dict      = self._marking_to_dict()
         all_enabled = self._labels_enabled_after_silent(m_dict)
 
         if label_str == act:
-            return 0 if label_str in all_enabled else 2 # either S if enabled or L 
-        else: 
+            return 0 if label_str in all_enabled else 2
+        else:
             if label_str in all_enabled:
                 return 1
-            else: 
+            else:
                 return 3
-        # not enabled and not the current prefix position are masked
 
     def valid_label_mask(self) -> torch.Tensor:
-        """
-        Boolean mask over LABEL_SPACE.  A label passes if:
-
-            it equals the current prefix activity — always allowed so the
-              agent can always produce a log-only or synchronous move, OR
-            it can be fired as a non-cyclic, non-sink move from some
-              marking in the silent reachability set of the current marking.
-
-        Single _silent_reachable call (cached).  Inner loop short-circuits
-        per label as soon as one valid firing is confirmed.
-        """
         m_dict      = self._marking_to_dict()
         current_tup = _m_tuple(m_dict)
         act         = self.current_activity()
@@ -372,43 +284,15 @@ class AlignmentEnv:
         attn_weights:         torch.Tensor,
         moves_for_all_labels: list,
         compute_reward: bool = True):
-        """
-        Execute one alignment step.
 
-        Firing strategy
-        ---------------
-        0. The decoder predicts a label
-        1. Try direct firing (no silent preamble) via real_enabled_visible().
-           If multiple transitions share the same label only the first valid
-           one (non-cycle, non-sink) is used.
-        2. If that fails, call _silent_path_to for a targeted BFS that stops
-           as soon as the label becomes fireable.  Replay the silent path,
-           then fire the visible transition.
-
-        Both stages skip a firing if it would:
-          • produce the same marking as the current one (cycle)
-          • deposit a token in sink0 during an M-move
-        """
         current_marking = self.marking
         current_pos = self.pos
-        # now self.marking will get updated here and reward will take current and next is stored in the object
+
         move  = self.MOVE_SPACE[move_id]
         label = self.LABEL_SPACE[label_id]
 
         if self.is_done():
             return label, move, 0.0, True
-
-
-        # if self.pos == 1:
-        #     print("\nVALID ACTIONS:")
-
-        #     for label_id in torch.where(valid_labels_mask)[0].tolist():
-        #         label = self.LABEL_SPACE[label_id]
-        #         move  = self.infere_move_type(label_id)
-
-        #         print(label, move)
-
-        #     raise RuntimeError("debug")
 
         if move == "L":
             self.pos += 1
@@ -417,27 +301,23 @@ class AlignmentEnv:
             current_m   = self._marking_to_dict()
             current_tup = _m_tuple(current_m)
             fired       = False
-            # print("label = ", label)
-            # ------------------------------------------------------------------
+
             # Stage 1: direct firing
-            # ------------------------------------------------------------------
             for t in self.real_enabled_visible():
-                
                 if t.label != label:
                     continue
                 new_m   = self._fire(current_m, t)
                 new_tup = _m_tuple(new_m)
                 if new_tup == current_tup:
-                    continue            
+                    continue
                 if self._sink_place_name in new_m and move == "M":
-                    continue            
+                    continue
                 self.marking = self.sem.weak_execute(t, self.net, self.marking)
                 fired = True
                 break
+
             if not fired:
                 silent_path, matching_t = self._silent_path_to(current_m, label)
-                # print("matching t = ", matching_t)
-                
                 if silent_path is not None and matching_t is not None:
                     target_m = self._replay_silent_path(current_m, silent_path)
                     new_m    = self._fire(target_m, matching_t)
@@ -454,38 +334,23 @@ class AlignmentEnv:
                         self.marking = self.sem.weak_execute(
                             matching_t, self.net, self.marking
                         )
-                        # print("in marking : ", current_m)
-                        
                         fired = True
 
             if move == "S":
-                # print("pos+1")
                 self.pos += 1
 
         prev_moves.append(move)
         prev_labels.append(label)
-        # print("marking of before passed to A* : ", current_marking)
-        # print("marking of after passed to A* : ", self.marking)
-        
+
         if compute_reward:
             total_reward, force_done = self.reward_function(
-                prev_moves,
-                prev_labels,
-                labels_logits,
-                attn_weights,
-                moves_for_all_labels,
-                current_marking,
-                current_pos
+                prev_moves, prev_labels, labels_logits, attn_weights,
+                moves_for_all_labels, current_marking, current_pos
             )
         else:
             total_reward = 0.0
+            force_done = False
 
-        # print("last print in def step before returning : ")
-        # print(
-        #     "pos =", self.pos,
-        #     "activity =", self.current_activity(),
-        #     "marking =", self.marking
-        # )
         done = self.is_done() or force_done
 
         return (
@@ -494,64 +359,103 @@ class AlignmentEnv:
             total_reward,
             done
         )
-    
+
+    # =========================================================================
+    # Reward
+    # =========================================================================
+
     def reward_function(self,
             new_moves, new_labels, labels_logits, attn_weights,
             moves_for_all_labels, current_marking, current_pos
         ):
-        
+
         label = new_labels[-1]
         move  = new_moves[-1]
-        step  = len(new_moves)
         reward = 0.0
 
-        original_prefix = self.prefix
+        original_prefix      = self.prefix
         after_this_step_marking = self.marking
-        after_this_step_pos = self.pos
+        after_this_step_pos     = self.pos
+
         _, cost_before, _ = _astar_prefix_alignment(
-        prefix=original_prefix,
-        start_marking=current_marking,
-        start_pos=current_pos
+            prefix=original_prefix,
+            start_marking=current_marking,
+            start_pos=current_pos
         )
         _, cost_after, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=after_this_step_marking,
             start_pos=after_this_step_pos
         )
+
         if cost_after < cost_before:
             self.steps_without_progress = 0
         else:
             self.steps_without_progress += 1
+
+        # ------------------------------------------------------------------
+        # Base reward: A* cost improvement minus a small step penalty
+        # ------------------------------------------------------------------
         reward = float(cost_before - cost_after - 0.05)
         reward -= 0.1 * self.steps_without_progress
-        state_key = (
+
+        # ------------------------------------------------------------------
+        # State-visit accounting
+        # ------------------------------------------------------------------
+        prev_state_key = (
+            current_pos,
+            tuple(sorted(_m_tuple(
+                {p.name: v for p, v in current_marking.items() if v > 0}
+            )))
+        )
+        new_state_key = (
             after_this_step_pos,
-            tuple(sorted(_m_tuple(after_this_step_marking)))
+            tuple(sorted(_m_tuple(self._marking_to_dict())))
         )
 
-        visits = self.visited_states.get(state_key, 0)
-        self.visited_states[state_key] = (
-            self.visited_states.get(state_key, 0) + 1
+        prev_visit_count = self.visited_states.get(prev_state_key, 0)
+
+        # check novelty of destination BEFORE incrementing its counter
+        new_state_is_novel = new_state_key not in self.visited_states
+
+        self.visited_states[new_state_key] = (
+            self.visited_states.get(new_state_key, 0) + 1
         )
+        new_visit_count = self.visited_states[new_state_key]
 
-        visits = self.visited_states[state_key]
+        # ------------------------------------------------------------------
+        # Escape bonus: agent was in a previously-visited state and moved
+        # to a state it has never been in before.
+        # This creates a positive gradient for the exact action that breaks
+        # the loop, paired with the loop_depth feature so the policy can
+        # learn WHEN to diversify (high depth) vs exploit (depth 0).
+        # ------------------------------------------------------------------
+        if prev_visit_count >= 1 and new_state_is_novel:
+            reward += 5.0
 
-        reward -= 0.5 * (visits - 1)
-
+        # ------------------------------------------------------------------
+        # Loop penalties
+        # ------------------------------------------------------------------
         terminate = False
-        if self.steps_without_progress >= 10:
-            reward -= 10.0
-            terminate = True
+
+        if new_visit_count >= 3:
+            reward -= 20
+
+        if self.steps_without_progress >= 5:
+            reward -= 10
+
+        # ------------------------------------------------------------------
+        # Completion bonus
+        # ------------------------------------------------------------------
         if after_this_step_pos == len(original_prefix):
-            reward += 10.0
+            reward += 50
             terminate = True
 
-        # print(
-        #     "cost_before =", cost_before,
-        #     "cost_after =", cost_after,
-        #     "no_progress =", self.steps_without_progress,
-        #     "visits =", visits,
-        #     "reward =", reward
-        # )
+        print(
+            "visits =", new_visit_count,
+            "no_progress =", self.steps_without_progress,
+            "terminate =", terminate
+        )
+
+        reward -= 0.02
         return reward, terminate
-        
