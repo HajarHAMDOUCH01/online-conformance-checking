@@ -390,6 +390,7 @@ class AlignmentEnv:
 
         if cost_after < cost_before:
             self.steps_without_progress = 0
+            reward += 0.5 * self.steps_without_progress
         else:
             self.steps_without_progress += 1
 
@@ -439,7 +440,7 @@ class AlignmentEnv:
             reward += 2.0 * min(prev_visit_count, 5)
 
         # no progress penalty
-        reward -= 0.2 * self.steps_without_progress
+        reward -= 0.5 * self.steps_without_progress
 
         # catastrophic loop
         if new_visit_count >= 8:
