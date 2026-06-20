@@ -9,20 +9,20 @@ from pm4py.objects.petri_net.semantics import ClassicSemantics
 from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
 LOOKAHEAD_LAMBDA = 0.5
 
-def normalize_marking(marking):
+def normalize_marking_tuple(marking):
 
     if isinstance(marking, tuple):
-        return dict(marking)
-
-    if isinstance(marking, dict):
         return marking
 
+    if isinstance(marking, dict):
+        return _m_tuple(marking)
+
     # PM4Py Marking
-    return {
+    return _m_tuple({
         p.name: v
-        for p,v in marking.items()
+        for p, v in marking.items()
         if v > 0
-    }
+    })
 
 # helper used by both env and any external callers (including ppo_model.generate)
 def _m_tuple(m_dict: dict) -> tuple:
@@ -300,7 +300,7 @@ class AlignmentEnv:
         moves_for_all_labels: list,
         compute_reward: bool = True):
 
-        self.marking = normalize_marking(self.marking)
+        self.marking = normalize_marking_tuple(self.marking)
 
         current_marking = self.marking
         current_pos = self.pos
@@ -403,13 +403,8 @@ class AlignmentEnv:
         after_this_step_marking = self.marking
         after_this_step_pos     = self.pos
 
-
-        current_marking = _m_tuple(
-        normalize_marking(current_marking)
-    )
-        after_this_step_marking = _m_tuple(
-        normalize_marking(after_this_step_marking)
-    )
+        current_marking = normalize_marking_tuple(current_marking)
+        after_this_step_marking = normalize_marking_tuple(after_this_step_marking)
         
         
         print("current_marking type:", type(current_marking))
@@ -464,11 +459,12 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         prev_state_key = (
             current_pos,
-            normalize_marking(current_marking)
+            current_marking
         )
+
         new_state_key = (
             after_this_step_pos,
-            normalize_marking(after_this_step_marking)
+            after_this_step_marking
         )
 
         prev_visit_count = self.visited_states.get(prev_state_key, 0)
