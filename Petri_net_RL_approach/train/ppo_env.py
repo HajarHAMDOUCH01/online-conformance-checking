@@ -397,7 +397,7 @@ class AlignmentEnv:
         # Base reward: A* cost improvement minus a small step penalty
         # ------------------------------------------------------------------
         reward = float(cost_before - cost_after - 0.05)
-        reward -= 0.1 * self.steps_without_progress
+        
 
         # ------------------------------------------------------------------
         # State-visit accounting
@@ -430,22 +430,25 @@ class AlignmentEnv:
         # the loop, paired with the loop_depth feature so the policy can
         # learn WHEN to diversify (high depth) vs exploit (depth 0).
         # ------------------------------------------------------------------
+        # revisit penalty
+        reward -= 1.0 * (new_visit_count - 1)
+
+        # escape reward
         if prev_visit_count >= 1 and new_state_is_novel:
-            reward += 5.0
+            reward += 2.0 * min(prev_visit_count, 5)
 
-        # ------------------------------------------------------------------
-        # Loop penalties
-        # ------------------------------------------------------------------
-        terminate = False
+        # no progress penalty
+        reward -= 0.2 * self.steps_without_progress
 
-        if new_visit_count >= 3:
+        # catastrophic loop
+        if new_visit_count >= 8:
             reward -= 20
 
-        if self.steps_without_progress >= 5:
-            reward -= 10
-        # ------------------------------------------------------------------
-        # Completion bonus
-        # ------------------------------------------------------------------
+        # catastrophic stagnation
+        if self.steps_without_progress >= 8:
+            reward -= 20
+
+        # completion
         if after_this_step_pos == len(original_prefix):
             reward += 50
             terminate = True
@@ -456,5 +459,5 @@ class AlignmentEnv:
             "terminate =", terminate
         )
 
-        reward -= 0.02
+        reward -= 0.02 # for prioritising shot paths 
         return reward, terminate
