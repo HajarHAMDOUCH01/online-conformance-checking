@@ -155,16 +155,22 @@ class AlignmentEnv:
         return {p.name: cnt for p, cnt in marking.items() if cnt > 0}
 
     def _enabled_visible(self) -> set:
+        m_dict = self._marking_to_dict()
+
         return {
             t.label
-            for t in self.sem.enabled_transitions(self.net, self.marking)
-            if t.label is not None
+            for t in self._visible_transitions
+            if self._is_enabled(m_dict, t)
         }
 
+
     def real_enabled_visible(self) -> list:
+        m_dict = self._marking_to_dict()
+
         return [
-            t for t in self.sem.enabled_transitions(self.net, self.marking)
-            if t.label is not None
+            t
+            for t in self._visible_transitions
+            if self._is_enabled(m_dict, t)
         ]
 
     # =========================================================================
