@@ -458,13 +458,6 @@ class AlignmentEnv:
         reward += 0.5 * (cost_before - cost_after)
         reward -= 0.25
 
-        astar_move = alignment_before[0]
-
-        if (move,label) == astar_move:
-            reward += 0.5
-        else:
-            reward -= 0.1
-
         # ------------------------------------------------------------------
         # State-visit accounting
         # ------------------------------------------------------------------

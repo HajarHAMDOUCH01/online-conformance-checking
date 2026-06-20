@@ -364,7 +364,7 @@ class ActorCritic(nn.Module):
             data['old_lps'].append(old_lp)
             data['values'].append(value.item())
             data['dones'].append(done)
-            data['costs'].append(remaining_cost)
+            data['costs'].append(cost_id)
 
             mv = new_mv
             i += 1
