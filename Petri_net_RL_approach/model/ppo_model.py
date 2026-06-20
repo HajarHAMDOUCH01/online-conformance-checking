@@ -251,11 +251,11 @@ class ActorCritic(nn.Module):
             data['valid_label_masks'].append(valid_labels_mask.clone())
 
             policy_bias = torch.zeros(len(env.LABEL_SPACE), device=label_logits.device)
-            if i == 0:
-                policy_bias = self.prefix_policy_bias(
-                    env, valid_labels_mask, data['moves_str'],
-                    label_logits.device, 50.0
-                )
+            # if i == 0:
+            #     policy_bias = self.prefix_policy_bias(
+            #         env, valid_labels_mask, data['moves_str'],
+            #         label_logits.device, 50.0
+            #     )
             data['policy_biases'].append(policy_bias.detach().cpu())
 
             ll = label_logits.clone()
