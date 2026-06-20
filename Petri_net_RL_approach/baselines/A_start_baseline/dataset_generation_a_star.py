@@ -358,10 +358,10 @@ def _astar_prefix_alignment(
 
     if start_marking is None:
         start_marking = _IM_TUPLE
-        print("IM type =", type(_IM_TUPLE))
-        print("IM =", _IM_TUPLE)
-    print("start_marking =", start_marking)
-    print("start_pos =", start_pos)
+        # print("IM type =", type(_IM_TUPLE))
+        # print("IM =", _IM_TUPLE)
+    # print("start_marking =", start_marking)
+    # print("start_pos =", start_pos)
 
     print(type(start_marking))
     print(start_marking)
@@ -387,7 +387,7 @@ def _astar_prefix_alignment(
     while heap:
         
         f, _, g_curr, m_tup, pos = heapq.heappop(heap)
-        print("popped state:", m_tup, pos)
+        # print("popped state:", m_tup, pos)
         state = (m_tup, pos)
         m_dict = dict(m_tup)
         
