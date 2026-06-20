@@ -437,6 +437,11 @@ class AlignmentEnv:
             start_marking=current_marking,
             start_pos=current_pos
         )
+        expert_move_type, expert_label = alignment_before[0]
+        if move == expert_move_type and label == expert_label:
+            reward += 3.0
+        else:
+            reward -= 1.0
         alignment_after, cost_after, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=after_this_step_marking,
@@ -457,7 +462,7 @@ class AlignmentEnv:
         dist_improvement = dist_before - dist_after
         dist_improvement = max(-2, min(2, dist_improvement))
 
-        reward += 1.0 * dist_improvement
+        # reward += 1.0 * dist_improvement
         
 
         if cost_after >= cost_before:
