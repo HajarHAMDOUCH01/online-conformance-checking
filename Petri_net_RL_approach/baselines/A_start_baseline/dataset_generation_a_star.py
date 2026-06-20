@@ -474,33 +474,34 @@ def _astar_prefix_alignment(
                 )
 
         reachable_labels = _labels_enabled_after_silent(m_dict)
+        allow_model_moves = pos > start_pos
+        if allow_model_moves:
+            for lbl in reachable_labels:
 
-        for lbl in reachable_labels:
+                silent_path, matching_t = _silent_path_to(
+                    m_dict,
+                    lbl
+                )
 
-            silent_path, matching_t = _silent_path_to(
-                m_dict,
-                lbl
-            )
+                if matching_t is None:
+                    continue
 
-            if matching_t is None:
-                continue
+                m_after_tau = _replay_silent_path(
+                    m_dict,
+                    silent_path
+                )
 
-            m_after_tau = _replay_silent_path(
-                m_dict,
-                silent_path
-            )
+                m_after_model = _fire(
+                    m_after_tau,
+                    matching_t
+                )
 
-            m_after_model = _fire(
-                m_after_tau,
-                matching_t
-            )
-
-            _push(
-                m_after_model,
-                pos,
-                COST_MODEL,
-                ("M", lbl)
-            )
+                _push(
+                    m_after_model,
+                    pos,
+                    COST_MODEL,
+                    ("M", lbl)
+                )
 
         # 3. Log-only move
         if act is not None:
