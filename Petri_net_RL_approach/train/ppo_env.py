@@ -17,12 +17,14 @@ def normalize_marking_tuple(marking):
     if isinstance(marking, dict):
         return _m_tuple(marking)
 
-    # PM4Py Marking
-    return _m_tuple({
-        p.name: v
-        for p, v in marking.items()
-        if v > 0
-    })
+    if isinstance(marking, Marking):
+        return _m_tuple({
+            p.name:v
+            for p,v in marking.items()
+            if v > 0
+        })
+
+    raise TypeError(type(marking))
 
 # helper used by both env and any external callers (including ppo_model.generate)
 def _m_tuple(m_dict: dict) -> tuple:
@@ -94,17 +96,26 @@ class AlignmentEnv:
     def reset(self, prefix: list) -> torch.Tensor:
         self.prefix  = list(prefix)
         self.pos     = 0
-        self.marking = Marking({p: v for p, v in self.im.items()})
+        # self.marking = Marking({p: v for p, v in self.im.items()})
+        self.marking = {
+            p.name:v
+            for p,v in self.im.items()
+            if v > 0
+        }
         self._inserted_model_moves = []
         self.steps_without_progress = 0
         self.visited_states = {}
         return self.marking_vec()
 
-    def marking_vec(self) -> torch.Tensor:
+    def marking_vec(self):
         v = torch.zeros(self.n_places)
-        for p, cnt in self.marking.items():
-            if p in self.place_idx:
-                v[self.place_idx[p]] = float(cnt)
+
+        for pname, cnt in self.marking.items():
+            for p, idx in self.place_idx.items():
+                if p.name == pname:
+                    v[idx] = float(cnt)
+                    break
+
         return v
 
     def current_activity(self):
@@ -300,7 +311,6 @@ class AlignmentEnv:
         moves_for_all_labels: list,
         compute_reward: bool = True):
 
-        self.marking = normalize_marking_tuple(self.marking)
 
         current_marking = self.marking
         current_pos = self.pos
