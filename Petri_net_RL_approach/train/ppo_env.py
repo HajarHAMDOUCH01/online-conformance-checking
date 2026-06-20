@@ -472,7 +472,7 @@ class AlignmentEnv:
         reward -= 0.25
 
         if move == "M":
-            reward -= 0.5
+            reward -= 4.0
 
         # ------------------------------------------------------------------
         # State-visit accounting
