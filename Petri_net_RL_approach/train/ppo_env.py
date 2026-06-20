@@ -397,7 +397,7 @@ class AlignmentEnv:
         # Base reward: A* cost improvement minus a small step penalty
         # ------------------------------------------------------------------
         reward = float(cost_before - cost_after - 0.05)
-        
+        reward = 5.0 * reward
 
         # ------------------------------------------------------------------
         # State-visit accounting
@@ -443,15 +443,15 @@ class AlignmentEnv:
 
         # catastrophic loop
         if new_visit_count >= 8:
-            reward -= 20
+            reward -= 10
 
         # catastrophic stagnation
         if self.steps_without_progress >= 8:
-            reward -= 20
+            reward -= 10
 
         # completion
         if after_this_step_pos == len(original_prefix):
-            reward += 50
+            # reward += 50
             terminate = True
 
         print(

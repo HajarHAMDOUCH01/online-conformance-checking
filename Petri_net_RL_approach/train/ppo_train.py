@@ -304,7 +304,7 @@ def main():
         "state": model.state_dict(),
         "vocab": vocab,
     }, PPO_OUT)
-    print(f"Phase 2 model saved → {PPO_OUT}")
+    print(f"Phase 2 model saved -> {PPO_OUT}")
 
 
 if __name__ == "__main__":

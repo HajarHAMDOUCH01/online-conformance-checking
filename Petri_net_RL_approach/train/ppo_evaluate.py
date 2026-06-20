@@ -238,7 +238,7 @@ def main():
                 # print()
 
         case_elapsed = time.perf_counter() - case_start
-        # status = "SKIPPED (timeout)" if case_skip else "done"
+        status = "SKIPPED (timeout)" if case_skip else "done"
         # print(f"Case {case_id} {status} — {len(case_df)} prefixes in {case_elapsed:.2f}s")
 
     total_elapsed = time.perf_counter() - t_eval_start

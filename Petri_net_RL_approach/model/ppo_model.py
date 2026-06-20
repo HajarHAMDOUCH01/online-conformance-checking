@@ -14,9 +14,8 @@ class ActorCritic(nn.Module):
                  # without it it starts away from the prefix and gets lost and this prevents training , 
                  # training uses sampling anywway , so sometimes it still starts with an M move away from prefix 
                  # and learns from its actions
-                 current_label_bias: float = 50.0, 
+                 current_label_bias: float = 50.0,
                  
-                  
                  m_streak_penalty: float = 2.0,
                  max_loop_depth: int = 4): 
         super().__init__()
@@ -269,7 +268,7 @@ class ActorCritic(nn.Module):
                 break
 
             label_dist = torch.distributions.Categorical(probs)
-            label      = label_dist.sample() if train else label_dist.probs.argmax()
+            label      = label_dist.sample() 
             old_lp     = label_dist.log_prob(label).item()
             move       = env.infere_move_type(label.item())
 
@@ -310,4 +309,4 @@ class ActorCritic(nn.Module):
             if done:
                 break
 
-        return data, n_invalid
+        return data, n_invalid  
