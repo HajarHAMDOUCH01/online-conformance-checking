@@ -404,17 +404,19 @@ class AlignmentEnv:
         after_this_step_pos     = self.pos
 
 
-        print("current_marking type:", type(current_marking))
-        print("current_marking:", current_marking)
-
-        print("after_marking type:", type(after_this_step_marking))
-        print("after_marking:", after_this_step_marking)
         current_marking = _m_tuple(
         normalize_marking(current_marking)
     )
         after_this_step_marking = _m_tuple(
         normalize_marking(after_this_step_marking)
     )
+        
+        
+        print("current_marking type:", type(current_marking))
+        print("current_marking:", current_marking)
+
+        print("after_marking type:", type(after_this_step_marking))
+        print("after_marking:", after_this_step_marking)
         alignment_before, cost_before, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=current_marking,
@@ -462,13 +464,11 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         prev_state_key = (
             current_pos,
-            tuple(sorted(_m_tuple(
-                {p.name: v for p, v in current_marking.items() if v > 0}
-            )))
+            normalize_marking(current_marking)
         )
         new_state_key = (
             after_this_step_pos,
-            tuple(sorted(_m_tuple(self._marking_to_dict())))
+            normalize_marking(after_this_step_marking)
         )
 
         prev_visit_count = self.visited_states.get(prev_state_key, 0)
