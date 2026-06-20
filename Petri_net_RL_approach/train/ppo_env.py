@@ -382,17 +382,26 @@ class AlignmentEnv:
             start_marking=current_marking,
             start_pos=current_pos
         )
-        _, cost_after, _ = _astar_prefix_alignment(
+        alignement, cost_after, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=after_this_step_marking,
             start_pos=after_this_step_pos
         )
-
-        if cost_after < cost_before:
+        #expressing futur synchronization excepctation from now looking steps without pregression###################
+        num_log_moves_after = 0
+        num_sync_moves_after = 0
+        for mv_type, label in alignement:
+            if mv_type == 'L':
+                num_log_moves_after += 1
+            if mv_type == 'S':
+                num_sync_moves_after += 1
+        
+        if (cost_after < cost_before) & (num_sync_moves_after > num_log_moves_after):
             self.steps_without_progress = 0
             reward += 0.5 * self.steps_without_progress
         else:
             self.steps_without_progress += 1
+        ###############################################################################################################
 
         # ------------------------------------------------------------------
         # Base reward: A* cost improvement minus a small step penalty
