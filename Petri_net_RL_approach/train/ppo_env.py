@@ -427,11 +427,11 @@ class AlignmentEnv:
         after_this_step_marking = normalize_marking_tuple(after_this_step_marking)
         
         
-        print("current_marking type:", type(current_marking))
-        print("current_marking:", current_marking)
+        # print("current_marking type:", type(current_marking))
+        # print("current_marking:", current_marking)
 
-        print("after_marking type:", type(after_this_step_marking))
-        print("after_marking:", after_this_step_marking)
+        # print("after_marking type:", type(after_this_step_marking))
+        # print("after_marking:", after_this_step_marking)
         alignment_before, cost_before, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=current_marking,
@@ -442,8 +442,8 @@ class AlignmentEnv:
             start_marking=after_this_step_marking,
             start_pos=after_this_step_pos
         )
-        print("alignement before : ", alignment_before)
-        print("alignement after : ", alignment_after)
+        # print("alignement before : ", alignment_before)
+        # print("alignement after : ", alignment_after)
         dist_before = 10
         for i, (mv_type, _) in enumerate(alignment_before):
             if mv_type == "S":
@@ -528,14 +528,14 @@ class AlignmentEnv:
             # reward += 50
             terminate = True
 
-        print(
-            move,
-            cost_before,
-            cost_after,
-            dist_before,
-            dist_after,
-            reward
-        )
+        # print(
+        #     move,
+        #     cost_before,
+        #     cost_after,
+        #     dist_before,
+        #     dist_after,
+        #     reward
+        # )
 
         reward -= 0.02 # for prioritising shorter paths 
         return reward, terminate
