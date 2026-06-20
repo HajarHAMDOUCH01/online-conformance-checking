@@ -437,11 +437,6 @@ class AlignmentEnv:
             start_marking=current_marking,
             start_pos=current_pos
         )
-        expert_move_type, expert_label = alignment_before[0]
-        if move == expert_move_type and label == expert_label:
-            reward += 3.0
-        else:
-            reward -= 1.0
         alignment_after, cost_after, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=after_this_step_marking,
@@ -449,26 +444,13 @@ class AlignmentEnv:
         )
         # print("alignement before : ", alignment_before)
         # print("alignement after : ", alignment_after)
-        dist_before = 10
-        for i, (mv_type, _) in enumerate(alignment_before):
-            if mv_type == "S":
-                dist_before = i
-                break
-        dist_after = 10
-        for i, (mv_type, _) in enumerate(alignment_after):
-            if mv_type == "S":
-                dist_after = i
-                break
-        dist_improvement = dist_before - dist_after
-        dist_improvement = max(-2, min(2, dist_improvement))
-
-        # reward += 1.0 * dist_improvement
+        
         
 
-        if cost_after >= cost_before:
-            self.steps_without_progress += 1
-        else:
-            self.steps_without_progress = 0
+        # if cost_after >= cost_before:
+        #     self.steps_without_progress += 1
+        # else:
+        #     self.steps_without_progress = 0
 
         # ------------------------------------------------------------------
         # Base reward: A* cost improvement minus a small step penalty
@@ -476,8 +458,12 @@ class AlignmentEnv:
         reward += 0.5 * (cost_before - cost_after)
         reward -= 0.25
 
-        if move == "M":
-            reward -= 4.0
+        astar_move = alignment_before[0]
+
+        if (move,label) == astar_move:
+            reward += 0.5
+        else:
+            reward -= 0.1
 
         # ------------------------------------------------------------------
         # State-visit accounting
@@ -511,14 +497,14 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         terminate = False
         # revisit penalty
-        reward -= 1.0 * (new_visit_count - 1)
+        reward -= 0.5 * (new_visit_count - 1)
 
         # escape reward
         # if prev_visit_count >= 1 and new_state_is_novel:
         #     reward += 2.0 * min(prev_visit_count, 5)
 
         # no progress penalty
-        reward -= 0.2 * self.steps_without_progress
+        # reward -= 0.2 * self.steps_without_progress
 
         # catastrophic loop
         if new_visit_count >= 8:
