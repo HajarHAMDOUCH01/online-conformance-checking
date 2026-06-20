@@ -372,42 +372,58 @@ class AlignmentEnv:
         label = new_labels[-1]
         move  = new_moves[-1]
         reward = 0.0
-
         original_prefix      = self.prefix
         after_this_step_marking = self.marking
         after_this_step_pos     = self.pos
 
-        _, cost_before, _ = _astar_prefix_alignment(
+
+        print("current_marking type:", type(current_marking))
+        print("current_marking:", current_marking)
+
+        print("after_marking type:", type(after_this_step_marking))
+        print("after_marking:", after_this_step_marking)
+
+        alignment_before, cost_before, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=current_marking,
             start_pos=current_pos
         )
-        alignement, cost_after, _ = _astar_prefix_alignment(
+        alignment_after, cost_after, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=after_this_step_marking,
             start_pos=after_this_step_pos
         )
-        #expressing futur synchronization excepctation from now looking steps without pregression###################
-        num_log_moves_after = 0
-        num_sync_moves_after = 0
-        for mv_type, label in alignement:
-            if mv_type == 'L':
-                num_log_moves_after += 1
-            if mv_type == 'S':
-                num_sync_moves_after += 1
+        print("alignement before : ", alignment_before)
+        print("alignement after : ", alignment_after)
+        dist_before = 10
+        for i, (mv_type, _) in enumerate(alignment_before):
+            if mv_type == "S":
+                dist_before = i
+                break
+        dist_after = 10
+        for i, (mv_type, _) in enumerate(alignment_after):
+            if mv_type == "S":
+                dist_after = i
+                break
+        dist_improvement = dist_before - dist_after
+        dist_improvement = max(-2, min(2, dist_improvement))
+
+        reward += 1.0 * dist_improvement
         
-        if (cost_after < cost_before) & (num_sync_moves_after > num_log_moves_after):
-            self.steps_without_progress = 0
-            reward += 0.5 * self.steps_without_progress
-        else:
+
+        if cost_after >= cost_before:
             self.steps_without_progress += 1
-        ###############################################################################################################
+        else:
+            self.steps_without_progress = 0
 
         # ------------------------------------------------------------------
         # Base reward: A* cost improvement minus a small step penalty
         # ------------------------------------------------------------------
-        reward = float(cost_before - cost_after - 0.05)
-        reward = 5.0 * reward
+        reward += 5.0 * (cost_before - cost_after)
+        reward -= 0.25
+
+        if move == "M":
+            reward -= 0.5
 
         # ------------------------------------------------------------------
         # State-visit accounting
@@ -445,11 +461,11 @@ class AlignmentEnv:
         reward -= 1.0 * (new_visit_count - 1)
 
         # escape reward
-        if prev_visit_count >= 1 and new_state_is_novel:
-            reward += 2.0 * min(prev_visit_count, 5)
+        # if prev_visit_count >= 1 and new_state_is_novel:
+        #     reward += 2.0 * min(prev_visit_count, 5)
 
         # no progress penalty
-        reward -= 0.5 * self.steps_without_progress
+        reward -= 0.2 * self.steps_without_progress
 
         # catastrophic loop
         if new_visit_count >= 8:
@@ -465,10 +481,13 @@ class AlignmentEnv:
             terminate = True
 
         print(
-            "visits =", new_visit_count,
-            "no_progress =", self.steps_without_progress,
-            "terminate =", terminate
+            move,
+            cost_before,
+            cost_after,
+            dist_before,
+            dist_after,
+            reward
         )
 
-        reward -= 0.02 # for prioritising shot paths 
+        reward -= 0.02 # for prioritising shorter paths 
         return reward, terminate
