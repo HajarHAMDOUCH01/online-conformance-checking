@@ -110,7 +110,7 @@ class AlignmentEnv:
     def marking_vec(self):
         v = torch.zeros(self.n_places)
 
-        for pname, cnt in self.marking.items():
+        for pname, cnt in self._marking_to_dict().items():
             for p, idx in self.place_idx.items():
                 if p.name == pname:
                     v[idx] = float(cnt)
@@ -145,7 +145,11 @@ class AlignmentEnv:
         return result
 
     def _marking_to_dict(self) -> dict:
-        return {p.name: v for p, v in self.marking.items() if v > 0}
+        return {
+            p.name if hasattr(p, "name") else p: v
+            for p, v in self.marking.items()
+            if v > 0
+        }
 
     def _pm4py_marking_to_name_dict(self, marking) -> dict:
         return {p.name: cnt for p, cnt in marking.items() if cnt > 0}
