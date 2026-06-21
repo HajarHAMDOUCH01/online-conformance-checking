@@ -319,7 +319,7 @@ class AlignmentEnv:
         labels_logits:        torch.Tensor,
         attn_weights:         torch.Tensor,
         moves_for_all_labels: list,
-        compute_reward: bool = False):
+        compute_reward: bool = True):
 
 
         current_marking = self.marking
@@ -456,7 +456,7 @@ class AlignmentEnv:
         # Base reward: A* cost improvement minus a small step penalty
         # ------------------------------------------------------------------
         reward += 0.5 * (cost_before - cost_after)
-        reward -= 0.25
+        reward -= 0.5
 
         # ------------------------------------------------------------------
         # State-visit accounting
@@ -509,7 +509,7 @@ class AlignmentEnv:
 
         # completion
         if after_this_step_pos == len(original_prefix):
-            reward += 15
+            # reward += 15
             terminate = True
 
         # print(

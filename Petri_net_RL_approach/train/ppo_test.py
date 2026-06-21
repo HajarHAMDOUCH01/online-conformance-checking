@@ -90,12 +90,19 @@ def main():
         for trace in log_all
     ]
 
-    threshold = 0.9
-    eval_cases = [
+    threshold = 0.99
+    neg_traces = [
         trace for i, trace in enumerate(log_all)
         if 0.85 < traces_fitnes_list[i] < threshold
     ]
-    print(f"{len(eval_cases)} traces in (0.85, {threshold}) out of {len(log_all)} total")
+    print(f"{len(neg_traces)} traces in (0.85, {threshold}) , this is the training set")
+
+    threshold = 0.85
+    eval_cases = [
+        trace for i, trace in enumerate(log_all)
+        if traces_fitnes_list[i] < threshold
+    ]
+    print(f"{len(eval_cases)} traces under 0.85 and {neg_traces} in training set")
 
     eval_cases_ids = {
         str(trace.attributes["concept:name"]).strip()

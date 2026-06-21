@@ -205,17 +205,17 @@ def main():
         a = float(trace.attributes.get("trace_fitness"))
         traces_fitnes_list.append(a)
 
-    threshold = 0.85
+    threshold = 0.99
     train_cases = [
         trace for i, trace in enumerate(log_all)
-        if traces_fitnes_list[i] < threshold
+        if 0.85 < traces_fitnes_list[i] < threshold
     ]
     print(log_all)
     train_cases_ids = [trace.attributes["concept:name"] for trace in train_cases]
     df["case_id"] = df["case_id"].astype(str)
     df    = df[df["case_id"].isin(train_cases_ids)].reset_index(drop=True)
     cases = df["case_id"].unique()
-    print(f"Training (PPO) on {len(cases)} cases, {len(df)} rows")
+    print(f"Training (PPO) on {len(cases)} cases (between 0.85 and 0.99), {len(df)} rows")
 
     # ── Environment ───────────────────────────────────────────────────────────
     net, im, fm = pm4py.read_pnml(PNML_PATH)
