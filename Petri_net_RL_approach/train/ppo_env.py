@@ -319,7 +319,7 @@ class AlignmentEnv:
         labels_logits:        torch.Tensor,
         attn_weights:         torch.Tensor,
         moves_for_all_labels: list,
-        compute_reward: bool = True):
+        compute_reward: bool = False):
 
 
         current_marking = self.marking
@@ -509,7 +509,7 @@ class AlignmentEnv:
 
         # completion
         if after_this_step_pos == len(original_prefix):
-            # reward += 50
+            reward += 15
             terminate = True
 
         # print(

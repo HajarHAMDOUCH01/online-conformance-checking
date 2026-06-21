@@ -238,12 +238,12 @@ class ActorCritic(nn.Module):
         env,
         vocab,
         max_len=60,
-        train=True,
-        compute_reward=True,
+        train=False,
+        compute_reward=False,
         dataset_path: str | None = None):
 
         self.train(train)
-        # self.eval()
+        self.eval()
 
         data = dict(
             marks=[], moves=[], labels=[],
@@ -290,7 +290,7 @@ class ActorCritic(nn.Module):
             loop_depth = _gen_visited.get(state_key, 0)
 
             # --- hard structural exit: third revisit means we are stuck -----
-            # (only as a safety net; the policy should learn to avoid this)
+            # (only as safety; the policy should learn to avoid this)
             # if loop_depth >= 3:
             #     break
 

@@ -613,7 +613,7 @@ for trace in log_all:
     a = float(trace.attributes.get("trace_fitness"))
     traces_fitnes_list.append(a)
 # print(traces_fitnes_list)
-threshold = 0.85
+threshold = 0.9
 
 neg_traces = [
     trace for i, trace in enumerate(log_all)
