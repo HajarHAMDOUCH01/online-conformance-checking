@@ -612,12 +612,13 @@ traces_fitnes_list = []
 for trace in log_all:
     a = float(trace.attributes.get("trace_fitness"))
     traces_fitnes_list.append(a)
-    threshold = 0.99
-    neg_traces = [
-        trace for i, trace in enumerate(log_all)
-        if 0.85 < traces_fitnes_list[i] < threshold
-    ]
-    print(f"training set : {len(neg_traces)} traces in (0.85, {threshold}) out of {len(log_all)} total")
+
+threshold = 0.99
+neg_traces = [
+    trace for i, trace in enumerate(log_all)
+    if 0.85 < traces_fitnes_list[i] < threshold
+]
+print(f"training set : {len(neg_traces)} traces in (0.85, {threshold}) out of {len(log_all)} total")
 
 max_trace = max(neg_traces, key=len)
 
