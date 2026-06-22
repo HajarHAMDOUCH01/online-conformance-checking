@@ -28,6 +28,7 @@ DS_CSV           = _paths["ds_csv"]
 PNML_PATH        = _paths["pnml_path"]
 MODEL_PHASE1_OUT = _p2["model_phase1_out"]
 PPO_OUT          = _p2["ppo_out"]
+PPO_CHECKPOINT   = _p2["ppo_pt_checkpoint"]
 XES_PATH         = _paths["xes_path"]
 
 # ── PPO hyper-parameters ──────────────────────────────────────────────────────
@@ -115,7 +116,8 @@ def ppo_update(env, model, opt, batch):
                 mv       = traj['marks'][t]
                 act_id   = traj['act_ids'][t]
                 pos      = traj['positions'][t]
-                # NEW — replay the exact loop_depth the policy saw during
+                # replay the exact loop_depth the policy saw during
+                # futur cost is also replayed of course , GAE ollout needs the state
                 # rollout so the gradient flows through the same computation
                 # graph that produced the action.
                 loop_depth = traj['loop_depths'][t]
@@ -183,6 +185,41 @@ def ppo_update(env, model, opt, batch):
     return epoch_loss.item()
 
 
+
+def load_checkpoint(
+    checkpoint_path,
+    model,
+    optimizer=None,
+    scheduler=None,
+    map_location="cpu"
+):
+    ckpt = torch.load(
+        checkpoint_path,
+        map_location=map_location,
+        weights_only=False
+    )
+
+    model.load_state_dict(ckpt["state"])
+
+    if optimizer is not None and "optimizer" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer"])
+        print("loaded optimizer")
+
+    if scheduler is not None and "scheduler" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler"])
+        print("loaded scheduler")
+
+    vocab = ckpt.get("vocab", None)
+    start_episode = ckpt.get("episode", 0)
+
+    print(
+        f"Loaded checkpoint '{checkpoint_path}' "
+        f"(episode {start_episode})"
+    )
+
+    return start_episode, vocab
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -220,7 +257,7 @@ def main():
     # ── Environment ───────────────────────────────────────────────────────────
     net, im, fm = pm4py.read_pnml(PNML_PATH)
     print("Initial marking:", im)
-
+    print("genrating final marking with pm4py : \n")
     sink_place = next(p for p in net.places if p.name == "sink")
     fm = pm4py.generate_marking(net, sink_place)
     print("Final marking  :", fm)
@@ -242,8 +279,15 @@ def main():
         end_factor=0.1,
         total_iters=EPISODES
     )
+    # load from checkpoint 
+    start_episode, saved_vocab = load_checkpoint(
+    PPO_CHECKPOINT,
+    model,
+    opt,
+    scheduler
+    ) 
     # ── PPO training loop ─────────────────────────────────────────────────────
-    for ep in range(EPISODES):
+    for ep in range(start_episode, EPISODES):
         np.random.shuffle(cases)
 
         batch      = []

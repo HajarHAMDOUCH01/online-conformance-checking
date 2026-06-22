@@ -441,16 +441,6 @@ def _astar_prefix_alignment(
                 except Exception as exc:
                     print("exceptionnnnn in heuristic call : ", exc)
                 f_val      = new_g + h_val
-
-# prefix        : ['Blood_tests_biologie_delocalisee', 'Nettoyage_soins_nasopharynges', 'TDR']
-
-# gt labels     : ['Blood_tests_biologie_delocalisee', 'Urine_bandelette', 'Nettoyage_soins_nasopharynges', 'TDR']
-
-# gt move_types : ['S', 'M', 'S', 'S']
-
-# generated labels : ['Blood_tests_biologie_delocalisee', 'TDR', 'Inhalation_bronchodilatateurs_aerosols', 'TDR', 'Urine_bandelette', 'Surveillance_prise_de_la_temperature', 'TDR', 'Blood_tests_biologie_delocalisee', 'Dispensation_instantane', 'Nettoyage_soins_nasopharynges', 'Surveillance_prise_de_la_temperature', 'Inhalation_bronchodilatateurs_aerosols', 'Surveillance_prise_de_la_temperature', 'Blood_tests_biologie_delocalisee', 'TDR']
-
-# corresponding move types : ['S', 'M', 'M', 'M', 'M', 'M', 'M', 'M', 'M', 'S', 'M', 'M', 'M', 'M', 'S']
                 try:
                     heapq.heappush(heap, (f_val, next(counter), new_g, new_tup, new_pos))
                     # print("pushed to heap: ", f_val, new_g)
@@ -616,17 +606,17 @@ for trace in log_all:
 threshold = 0.95
 neg_traces = [
     trace for i, trace in enumerate(log_all)
-    if 0.85 < traces_fitnes_list[i] < threshold
+    if traces_fitnes_list[i] < threshold
 ]
-print(f"training set : {len(neg_traces)} traces in (0.85, {threshold}) out of {len(log_all)} total")
+# print(f"training set : {len(neg_traces)} traces in (0.85, {threshold}) out of {len(log_all)} total")
 
 max_trace = max(neg_traces, key=len)
 
 print(f"Total traces              : {len(log_all)}")
-print(f"0.85 < Low-fitness traces < {threshold} : {len(neg_traces)}")
+print(f"Low-fitness traces < {threshold} : {len(neg_traces)}")
 print(f"Maximum trace length      : {len(max_trace)}")
 print(f"Longest trace             : {max_trace}")
-
+print(f"training is on traces between (0.85 and 0.95) and test is on traces under 0.85")
 # =============================================================================
 # Dataset generation loop
 # =============================================================================
