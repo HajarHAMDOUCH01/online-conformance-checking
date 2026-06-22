@@ -319,7 +319,7 @@ class AlignmentEnv:
         labels_logits:        torch.Tensor,
         attn_weights:         torch.Tensor,
         moves_for_all_labels: list,
-        compute_reward: bool = True):
+        compute_reward: bool = False):
 
 
         current_marking = self.marking

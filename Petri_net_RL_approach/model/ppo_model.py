@@ -238,12 +238,12 @@ class ActorCritic(nn.Module):
         env,
         vocab,
         max_len=60,
-        train=True,
-        compute_reward=True,
+        train=False,
+        compute_reward=False,
         dataset_path: str | None = None):
 
         self.train(train)
-        # self.eval()
+        self.eval()
 
         data = dict(
             marks=[], moves=[], labels=[],
