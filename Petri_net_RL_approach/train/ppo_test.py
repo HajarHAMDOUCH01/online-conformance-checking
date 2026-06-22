@@ -28,6 +28,7 @@ _paths = _cfg["paths"]
 PROJECT_ROOT = _paths["project_root"]
 DS_CSV       = _paths["ds_csv"]
 PNML_PATH    = _paths["pnml_path"]
+PPO_CHECKPOINT   = _cfg["evaluate"]["ppo_checkpoint"]
 PPO_PT       = _cfg["evaluate"]["ppo_pt"]
 EVAL_OUT_CSV = os.path.join(os.path.dirname(PPO_PT), "/ppo_eval_results.csv")
 K_TRAIN      = _sch["k_train"]
@@ -118,11 +119,11 @@ def main():
         vocab.add(label)
 
     # ── Load PPO model ────────────────────────────────────────────────────────
-    ckpt  = torch.load(PPO_PT, map_location="cpu", weights_only=False)
+    ckpt  = torch.load(PPO_CHECKPOINT, map_location="cpu", weights_only=False)
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
     model.load_state_dict(ckpt["state"], strict=True)
     model.eval()
-    print(f"Loaded PPO weights from: {PPO_PT}")
+    print(f"Loaded PPO weights from: {PPO_CHECKPOINT}")
     print(f"Checkpoint episode: {ckpt['episode']}")
     @torch.no_grad()
     def generate_eval(*args, **kwargs):

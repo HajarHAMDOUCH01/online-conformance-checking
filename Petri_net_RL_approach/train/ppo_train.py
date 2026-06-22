@@ -28,7 +28,7 @@ DS_CSV           = _paths["ds_csv"]
 PNML_PATH        = _paths["pnml_path"]
 MODEL_PHASE1_OUT = _p2["model_phase1_out"]
 PPO_OUT          = _p2["ppo_out"]
-PPO_CHECKPOINT   = _p2["ppo_pt_checkpoint"]
+PPO_CHECKPOINT   = _cfg["evaluate"]["ppo_checkpoint"]
 XES_PATH         = _paths["xes_path"]
 
 # ── PPO hyper-parameters ──────────────────────────────────────────────────────
