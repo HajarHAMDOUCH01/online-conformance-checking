@@ -32,7 +32,7 @@ class ActorCritic(nn.Module):
                  # without it it starts away from the prefix and gets lost and this prevents training , 
                  # training uses sampling anywway , so sometimes it still starts with an M move away from prefix 
                  # and learns from its actions
-                 current_label_bias: float = 50.0,
+                 current_label_bias: float = 5.0,
                  
                  m_streak_penalty: float = 2.0,
                  max_loop_depth: int = 4): 
