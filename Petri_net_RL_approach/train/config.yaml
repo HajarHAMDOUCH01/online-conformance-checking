@@ -22,12 +22,12 @@ dataset:
   activity_key: ${activity_key}
 
 # ─────────────────────────────────────────────
-#  Module: ppo_evaluate.py
+#  Module: ppo_test.py
 # ─────────────────────────────────────────────
 evaluate:
   ds_csv:           ${paths.ds_csv}
   pnml_path:        ${paths.pnml_path}
-  ppo_pt_checkpoint: "/content/ppo_checkpoint_ep_3.pt"
+  ppo_checkpoint: "/content/ppo_checkpoint_ep_3.pt"
   ppo_pt: "/content/ppo.pt"
   model_phase1_out: "model_phase1_out.pth"
 
