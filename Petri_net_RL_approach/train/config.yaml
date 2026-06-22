@@ -27,7 +27,7 @@ dataset:
 evaluate:
   ds_csv:           ${paths.ds_csv}
   pnml_path:        ${paths.pnml_path}
-  ppo_pt:           "ppo_pt.pth"
+  ppo_pt:           "/content/ppo_checkpoint_ep_2.pt"
   model_phase1_out: "model_phase1_out.pth"
 
 # ─────────────────────────────────────────────

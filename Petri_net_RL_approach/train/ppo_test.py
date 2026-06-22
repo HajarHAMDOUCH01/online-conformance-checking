@@ -90,7 +90,7 @@ def main():
         for trace in log_all
     ]
 
-    threshold = 0.99
+    threshold = 0.95
     neg_traces = [
         trace for i, trace in enumerate(log_all)
         if 0.85 < traces_fitnes_list[i] < threshold
@@ -131,6 +131,7 @@ def main():
     model.load_state_dict(ckpt["state"], strict=True)
     model.eval()
     print(f"Loaded PPO weights from: {PPO_PT}")
+    print(f"Checkpoint episode: {ckpt['episode']}")
     @torch.no_grad()
     def generate_eval(*args, **kwargs):
         return model.generate(*args, **kwargs)
