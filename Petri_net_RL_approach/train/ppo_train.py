@@ -305,6 +305,13 @@ def main():
         avg_loss = total_loss / max(n_updates, 1)
         print(f"Episode {ep+1}/{EPISODES}  avg_loss={avg_loss:.4f}  "
               f"updates={n_updates}  skipped={skipped}")
+        torch.save({
+            "episode": ep + 1,
+            "state": model.state_dict(),
+            "optimizer": opt.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "vocab": vocab,
+        }, f"ppo_checkpoint_ep_{ep+1}.pt")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     torch.save({
