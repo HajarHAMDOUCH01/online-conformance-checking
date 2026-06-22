@@ -205,7 +205,7 @@ def main():
         a = float(trace.attributes.get("trace_fitness"))
         traces_fitnes_list.append(a)
 
-    threshold = 0.99
+    threshold = 0.95
     train_cases = [
         trace for i, trace in enumerate(log_all)
         if 0.85 < traces_fitnes_list[i] < threshold
@@ -215,7 +215,7 @@ def main():
     df["case_id"] = df["case_id"].astype(str)
     df    = df[df["case_id"].isin(train_cases_ids)].reset_index(drop=True)
     cases = df["case_id"].unique()
-    print(f"Training (PPO) on {len(cases)} cases (between 0.85 and 0.99), {len(df)} rows")
+    print(f"Training (PPO) on {len(cases)} cases (between 0.85 and 0.95), {len(df)} rows")
 
     # ── Environment ───────────────────────────────────────────────────────────
     net, im, fm = pm4py.read_pnml(PNML_PATH)
@@ -272,9 +272,10 @@ def main():
                 src = torch.tensor([vocab.encode(prefix)])
 
                 model.eval()
-                print("prefix        :", prefix)
-                print("gt labels     :", GT_activity_labels)
-                print("gt move_types :", GT_move_types)
+                if idx % 100 == 0:
+                    print("prefix        :", prefix)
+                    print("gt labels     :", GT_activity_labels)
+                    print("gt move_types :", GT_move_types)
 
                 with torch.no_grad():
                     traj, n_invalid = model.generate(
@@ -289,14 +290,14 @@ def main():
                 if not traj:
                     skipped += 1
                     continue
-
-                print("generated labels :", traj["labels_str"])
-                print("corresponding move types :", traj["moves_str"])
+                if idx % 100 == 0:
+                    print("generated labels :", traj["labels_str"])
+                    print("corresponding move types :", traj["moves_str"])
 
                 if len(batch) >= BATCH_SIZE:
                     _flush_batch()
                     scheduler.step()
-            print("finished case idx : ", idx)
+            # print("finished case idx : ", idx)
 
         if batch:
             _flush_batch()
