@@ -90,10 +90,10 @@ def main():
         float(trace.attributes.get("trace_fitness"))
         for trace in log_all
     ]
-    threshold = 0.85
+    threshold = 0.95
     eval_cases = [
         trace for i, trace in enumerate(log_all)
-        if traces_fitnes_list[i] < threshold
+        if 0.85 < traces_fitnes_list[i] < threshold
     ]
     # print(f"{len(eval_cases)} traces under 0.85 and {neg_traces} in training set")
 
@@ -171,7 +171,12 @@ def main():
                 result  = run_with_timeout(
                     fn      = generate_eval,                 # was: model.generate
                     args    = (src, prefix, env, vocab),
-                    kwargs  = {"train": False, "compute_reward": False, "max_len": MAX_STEPS},
+                    kwargs = {
+                        "train": False,
+                        "compute_reward": True,
+                        "max_len": MAX_STEPS,
+                        "dataset_path": "/content/drive/MyDrive/PFE_data_CRAN/data_approach_1_split_miner_2/offline_dataset.pt"
+                    },
                     seconds = 10
                 )
                 traj, _ = result
