@@ -229,6 +229,18 @@ class ActorCritic(nn.Module):
                     bias[label_id] -= self.m_streak_penalty * m_streak
 
         return bias
+    
+import os 
+def save_episode_transitions(transitions, path):
+
+    if os.path.exists(path):
+        dataset = torch.load(path)
+    else:
+        dataset = []
+
+    dataset.extend(transitions)
+
+    torch.save(dataset, path)
 
     # -------------------------------------------------------------------------
     def generate(
@@ -253,6 +265,8 @@ class ActorCritic(nn.Module):
             positions=[], valid_label_masks=[], policy_biases=[],
             loop_depths=[], costs=[] 
         )
+        # Offline RL dataset storage
+        offline_dataset = []
         enc_out, h = self.encode(src)
         mv = env.reset(prefix)
         n_invalid = 0
@@ -288,7 +302,14 @@ class ActorCritic(nn.Module):
             # before the current step, i.e. the count *prior* to this visit.
             state_key  = (pos, tuple(sorted(_m_tuple(env._marking_to_dict()))))
             loop_depth = _gen_visited.get(state_key, 0)
-
+            # Save current state for offline RL
+            offline_state = {
+                "marking": current_marking,
+                "position": pos,
+                "activity_id": act_id,
+                "loop_depth": loop_depth,
+                "remaining_cost": cost_id
+            }
             # --- hard structural exit: third revisit means we are stuck -----
             # (only as safety; the policy should learn to avoid this)
             # if loop_depth >= 3:
@@ -337,7 +358,10 @@ class ActorCritic(nn.Module):
             label      = label_dist.sample() 
             old_lp     = label_dist.log_prob(label).item()
             move       = env.infere_move_type(label.item())
-
+            offline_action = {
+                "move": move,
+                "label": label.item()
+            }
             if move == 3:
                 raise RuntimeError("move can only be L/M/S; Mask didn't work!")
 
@@ -350,6 +374,60 @@ class ActorCritic(nn.Module):
                 label_logits[0], attn_weights, moves_for_all_labels,
                 compute_reward=compute_reward
             )
+            # Next state after transition
+            next_marking = normalize_marking_tuple(
+                env._marking_to_dict()
+            )
+
+            next_pos = env.pos
+
+            next_act = env.current_activity()
+
+            next_act_id = (
+                vocab.t2i.get(next_act, vocab.t2i["<UNK>"])
+                if next_act else 0
+            )
+
+
+            _, next_remaining_cost, _ = _astar_prefix_alignment(
+                prefix=prefix,
+                start_marking=next_marking,
+                start_pos=next_pos
+            )
+
+            next_cost_id = min(
+                int(next_remaining_cost),
+                99
+            )
+
+
+            next_state_key = (
+                next_pos,
+                tuple(sorted(next_marking))
+            )
+
+            next_loop_depth = _gen_visited.get(
+                next_state_key,
+                0
+            )
+
+
+            offline_next_state = {
+                "marking": next_marking,
+                "position": next_pos,
+                "activity_id": next_act_id,
+                "loop_depth": next_loop_depth,
+                "remaining_cost": next_cost_id
+            }
+            if dataset_path is not None:
+                offline_dataset.append({
+                    "prefix": prefix,
+                    "state": offline_state,
+                    "action": offline_action,
+                    "next_state": offline_next_state,
+                    "reward": float(reward),
+                    "done": done
+                })
 
             label = env.LABEL_ID_SPACE[label_str]
             move  = env.MOVE_ID_SPACE[move_str]
@@ -375,5 +453,9 @@ class ActorCritic(nn.Module):
             #     done = True    
             if done:
                 break
-
+        if dataset_path is not None and len(offline_dataset) > 0:
+            save_episode_transitions(
+                offline_dataset,
+                dataset_path
+            )
         return data, n_invalid  

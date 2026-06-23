@@ -456,7 +456,9 @@ class AlignmentEnv:
         # Base reward: A* cost improvement minus a small step penalty
         # ------------------------------------------------------------------
         reward += 0.7 * (cost_before - cost_after)
-        # reward -= 0.1
+        reward -= 0.25
+        # if move == "M" and cost_after <= cost_before:
+        #     reward += 0.5
 
         # ------------------------------------------------------------------
         # State-visit accounting
