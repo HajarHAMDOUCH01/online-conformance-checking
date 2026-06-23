@@ -230,17 +230,7 @@ class ActorCritic(nn.Module):
 
         return bias
     
-import os 
-def save_episode_transitions(transitions, path):
 
-    if os.path.exists(path):
-        dataset = torch.load(path)
-    else:
-        dataset = []
-
-    dataset.extend(transitions)
-
-    torch.save(dataset, path)
 
     # -------------------------------------------------------------------------
     def generate(
@@ -459,3 +449,16 @@ def save_episode_transitions(transitions, path):
                 dataset_path
             )
         return data, n_invalid  
+    
+
+import os 
+def save_episode_transitions(transitions, path):
+
+    if os.path.exists(path):
+        dataset = torch.load(path)
+    else:
+        dataset = []
+
+    dataset.extend(transitions)
+
+    torch.save(dataset, path)
