@@ -326,7 +326,7 @@ def _astar_prefix_alignment(
     Closed set
     ----------
     Essential for A* correctness: once a state is popped with its optimal g-value
-    it is marked closed and never re-expanded.  (Pure Dijkstra omits this and
+    it is marked closed and never re-expanded.  (Dijkstra omits this and
     instead uses a lazy check `cost > dist[state]`, which is equivalent but
     allocates more heap entries; A* with a closed set is cleaner and faster when
     the heuristic is consistent / monotone, which the used heuristic here is.)
@@ -358,7 +358,6 @@ def _astar_prefix_alignment(
 
     if start_marking is None:
         start_marking = _IM_TUPLE
-
 
     if isinstance(start_marking, dict):
         start_marking = _m_tuple(start_marking)

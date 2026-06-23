@@ -3,7 +3,6 @@ import torch.nn as nn
 # this code is not currently used 
 PAD, SOS, EOS, UNK = "<PAD>", "<SOS>", "<EOS>", "<UNK>"
 
-
 class Vocab:
     def __init__(self):
         self.t2i = {PAD: 0, SOS: 1, EOS: 2, UNK: 3}
