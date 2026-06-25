@@ -457,8 +457,8 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         reward += 0.7 * (cost_before - cost_after)
         reward -= 0.25
-        # if move == "M" and cost_after <= cost_before:
-        #     reward += 0.5
+        if move == "M":
+            reward += 0.1
 
         # ------------------------------------------------------------------
         # State-visit accounting
