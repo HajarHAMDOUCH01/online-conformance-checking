@@ -273,6 +273,7 @@ def main():
     # ── Model ─────────────────────────────────────────────────────────────────
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
     opt   = torch.optim.Adam(model.parameters(), lr=LR)
+    start_episode = 0
     scheduler = torch.optim.lr_scheduler.LinearLR(
         opt,
         start_factor=1.0,
@@ -280,12 +281,12 @@ def main():
         total_iters=EPISODES
     )
     # load from checkpoint 
-    start_episode, saved_vocab = load_checkpoint(
-    PPO_CHECKPOINT,
-    model,
-    opt,
-    scheduler
-    ) 
+    # start_episode, saved_vocab = load_checkpoint(
+    # PPO_CHECKPOINT,
+    # model,
+    # opt,
+    # scheduler
+    # ) 
     # ── PPO training loop ─────────────────────────────────────────────────────
     for ep in range(start_episode, EPISODES):
         np.random.shuffle(cases)
