@@ -10,7 +10,6 @@ import pm4py
 import yaml
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from pm4py.objects.log.importer.xes import importer as xes_importer
-from model.ppo_model import HeuristicBuffer, PetriHeuristicGNN
 
 # ── Load config ───────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -50,6 +49,7 @@ K_TRAIN    = _sch["k_train"]
 
 # ── Project path ──────────────────────────────────────────────────────────────
 sys.path.append(PROJECT_ROOT)
+from model.ppo_model import HeuristicBuffer, PetriHeuristicGNN
 
 from ppo_env import AlignmentEnv
 from model.ppo_model import ActorCritic
