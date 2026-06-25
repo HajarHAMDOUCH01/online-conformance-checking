@@ -52,7 +52,7 @@ class ActorCritic(nn.Module):
         # fuse_proj now takes 4 × emb_dim:
         #   marking_emb | activity_emb | pos_emb | loop_depth_emb
         self.fuse_proj = nn.Linear(
-            emb_dim * 5,
+            emb_dim * 4,
             emb_dim,
             bias=False
         )
@@ -77,11 +77,11 @@ class ActorCritic(nn.Module):
         nn.init.zeros_(self.label_head.bias)
         nn.init.zeros_(self.critic.bias)
         nn.init.orthogonal_(self.fuse_proj.weight)
-        nn.init.normal_(
-            self.cost_emb.weight,
-            mean=0.0,
-            std=0.01
-        )
+        # nn.init.normal_(
+        #     self.cost_emb.weight,
+        #     mean=0.0,
+        #     std=0.01
+        # )
         # loop_depth_emb: initialise with small normal so depth=0 starts near zero
         nn.init.normal_(self.loop_depth_emb.weight, mean=0.0, std=0.01)
 
@@ -98,8 +98,8 @@ class ActorCritic(nn.Module):
         h,
         enc_out,
         act_id=0,
-        loop_depth=0,
-        remaining_cost=0
+        loop_depth=0
+        # remaining_cost=0
     ):       
         """
         One decoder step.
@@ -123,21 +123,21 @@ class ActorCritic(nn.Module):
         depth_emb = self.loop_depth_emb(
             torch.tensor([[depth_id]], device=device)
         )                                                              # (1,1,E)
-        cost_id = min(
-            remaining_cost,
-            self.cost_emb.num_embeddings - 1
-        )
+        # cost_id = min(
+        #     remaining_cost,
+        #     self.cost_emb.num_embeddings - 1
+        # )
 
-        cost_emb = self.cost_emb(
-            torch.tensor([[cost_id]], device=device)
-        )
+        # cost_emb = self.cost_emb(
+        #     torch.tensor([[cost_id]], device=device)
+        # )
         inp = self.fuse_proj(
             torch.cat([
                 marking_emb,
                 activity_emb,
                 pos_emb,
                 depth_emb,
-                cost_emb
+                # cost_emb
             ], dim=-1)        
         )                                                              # (1,1,E)
 
@@ -280,12 +280,12 @@ class ActorCritic(nn.Module):
                 env._marking_to_dict()
             )
 
-            _, remaining_cost, _ = _astar_prefix_alignment(
-                prefix=prefix,
-                start_marking=current_marking,
-                start_pos=pos
-            )
-            cost_id = min(int(remaining_cost), 99)
+            # _, remaining_cost, _ = _astar_prefix_alignment(
+            #     prefix=prefix,
+            #     start_marking=current_marking,
+            #     start_pos=pos
+            # )
+            # cost_id = min(int(remaining_cost), 99)
 
             # --- compute loop_depth BEFORE incrementing the counter --------
             # loop_depth = how many times we've already been in this state
@@ -298,7 +298,7 @@ class ActorCritic(nn.Module):
                 "position": pos,
                 "activity_id": act_id,
                 "loop_depth": loop_depth,
-                "remaining_cost": cost_id
+                # "remaining_cost": cost_id
             }
             # --- hard structural exit: third revisit means we are stuck -----
             # (only as safety; the policy should learn to avoid this)
@@ -317,8 +317,8 @@ class ActorCritic(nn.Module):
                 h,
                 enc_out,
                 act_id,
-                loop_depth=loop_depth,
-                remaining_cost=cost_id
+                loop_depth=loop_depth
+                # remaining_cost=cost_id
             )
             moves_for_all_labels = [env.infere_move_type(i)
                                      for i in range(len(env.LABEL_SPACE))]
@@ -379,16 +379,16 @@ class ActorCritic(nn.Module):
             )
 
 
-            _, next_remaining_cost, _ = _astar_prefix_alignment(
-                prefix=prefix,
-                start_marking=next_marking,
-                start_pos=next_pos
-            )
+            # _, next_remaining_cost, _ = _astar_prefix_alignment(
+            #     prefix=prefix,
+            #     start_marking=next_marking,
+            #     start_pos=next_pos
+            # )
 
-            next_cost_id = min(
-                int(next_remaining_cost),
-                99
-            )
+            # next_cost_id = min(
+            #     int(next_remaining_cost),
+            #     99
+            # )
 
 
             next_state_key = (
@@ -407,7 +407,7 @@ class ActorCritic(nn.Module):
                 "position": next_pos,
                 "activity_id": next_act_id,
                 "loop_depth": next_loop_depth,
-                "remaining_cost": next_cost_id
+                # "remaining_cost": next_cost_id
             }
             if dataset_path is not None:
                 offline_dataset.append({

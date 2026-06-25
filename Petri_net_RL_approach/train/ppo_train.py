@@ -124,15 +124,15 @@ def ppo_update(env, model, opt, batch):
 
                 if traj['dones'][t - 1] if t > 0 else False:
                     break
-                remaining_cost = int(traj['costs'][t])
+                # remaining_cost = int(traj['costs'][t])
                 label_logits, val, h, _ = model.decode_step(
                     pos,
                     mv,
                     h,
                     enc_out,
                     act_id,
-                    loop_depth=loop_depth,
-                    remaining_cost=remaining_cost
+                    loop_depth=loop_depth
+                    # remaining_cost=remaining_cost
                 )
 
                 ll = label_logits.clone()
