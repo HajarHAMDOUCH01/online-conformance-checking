@@ -24,7 +24,7 @@ def normalize_marking_tuple(marking):
     raise TypeError(type(marking))
 
 class ActorCritic(nn.Module):
-    def __init__(self, vocab_size: int, n_places: int, n_labels: int,
+    def __init__(self, vocab_size: int, n_places: int, n_labels: int, heuristic_net,
                  emb_dim: int = 64, hidden_dim: int = 128,
                  prefix_attn_window: float = 2.0,
 
@@ -37,6 +37,7 @@ class ActorCritic(nn.Module):
                  m_streak_penalty: float = 2.0,
                  max_loop_depth: int = 4): 
         super().__init__()
+        self.heuristic_net = heuristic_net
         self.emb_dim = emb_dim
         self.prefix_attn_window = prefix_attn_window
         self.current_label_bias = current_label_bias
@@ -51,11 +52,8 @@ class ActorCritic(nn.Module):
 
         # fuse_proj now takes 4 × emb_dim:
         #   marking_emb | activity_emb | pos_emb | loop_depth_emb
-        self.fuse_proj = nn.Linear(
-            emb_dim * 4,
-            emb_dim,
-            bias=False
-        )
+        self.cost_proj = nn.Linear(1, emb_dim)     # replaces cost_emb
+        self.fuse_proj = nn.Linear(emb_dim * 5, emb_dim, bias=False)
 
         self.dec          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
         self.pos_emb      = nn.Embedding(70, emb_dim)
@@ -98,8 +96,8 @@ class ActorCritic(nn.Module):
         h,
         enc_out,
         act_id=0,
-        loop_depth=0
-        # remaining_cost=0
+        loop_depth=0,
+        remaining_cost=0
     ):       
         """
         One decoder step.
@@ -131,15 +129,11 @@ class ActorCritic(nn.Module):
         # cost_emb = self.cost_emb(
         #     torch.tensor([[cost_id]], device=device)
         # )
-        inp = self.fuse_proj(
-            torch.cat([
-                marking_emb,
-                activity_emb,
-                pos_emb,
-                depth_emb,
-                # cost_emb
-            ], dim=-1)        
-        )                                                              # (1,1,E)
+        cost_t   = torch.tensor([[[remaining_cost]]], device=device, dtype=torch.float32)
+        cost_emb = self.cost_proj(cost_t)
+        inp = self.fuse_proj(torch.cat(
+            [marking_emb, activity_emb, pos_emb, depth_emb, cost_emb], dim=-1
+        ))                                                            # (1,1,E)
 
         out, new_h = self.dec(inp, h)
 
@@ -311,14 +305,17 @@ class ActorCritic(nn.Module):
             data['positions'].append(pos)
             data['loop_depths'].append(loop_depth)   # store for replay
 
+            remaining = prefix[pos:]
+            src_remaining = (torch.tensor([vocab.encode(remaining)], device=mv.device) if remaining
+                            else torch.zeros((1, 1), dtype=torch.long, device=mv.device))
+            with torch.no_grad():
+                predicted_cost = self.heuristic_net(mv, src_remaining).item()
+            data['costs'].append(predicted_cost)        
+
             label_logits, value, h, attn_weights = self.decode_step(
-                pos,
-                mv,
-                h,
-                enc_out,
-                act_id,
-                loop_depth=loop_depth
-                # remaining_cost=cost_id
+                pos, mv, h, enc_out, act_id,
+                loop_depth=loop_depth,
+                remaining_cost=predicted_cost
             )
             moves_for_all_labels = [env.infere_move_type(i)
                                      for i in range(len(env.LABEL_SPACE))]
@@ -362,7 +359,8 @@ class ActorCritic(nn.Module):
                 self, valid_labels_mask, move, label.item(),
                 list(data['moves']), list(data['labels']),
                 label_logits[0], attn_weights, moves_for_all_labels,
-                compute_reward=compute_reward
+                compute_reward=compute_reward,
+                loop_depth=loop_depth        
             )
             # Next state after transition
             next_marking = normalize_marking_tuple(
@@ -393,7 +391,7 @@ class ActorCritic(nn.Module):
 
             next_state_key = (
                 next_pos,
-                tuple(sorted(next_marking))
+                next_marking   # already a sorted tuple from normalize_marking_tuple()
             )
 
             next_loop_depth = _gen_visited.get(
@@ -432,7 +430,7 @@ class ActorCritic(nn.Module):
             data['old_lps'].append(old_lp)
             data['values'].append(value.item())
             data['dones'].append(done)
-            data['costs'].append(cost_id)
+            # data['costs'].append(cost_id)
 
             mv = new_mv
             i += 1
@@ -450,6 +448,141 @@ class ActorCritic(nn.Module):
             )
         return data, n_invalid  
     
+
+
+from collections import defaultdict
+import torch
+import torch.nn as nn
+
+class PetriHeuristicGNN(nn.Module):
+    """
+    Learns to predict A*-style remaining alignment cost from
+    (marking, remaining_prefix) — no search at inference time.
+
+    Topology (places, transitions, arcs) is fixed and built once;
+    only the marking vector and remaining-prefix ids vary per call.
+    """
+
+    def __init__(self, net, place_list, place_idx, vocab_size,
+                 hidden_dim=64, emb_dim=64, n_layers=3):
+        super().__init__()
+        self.place_list = place_list
+        self.place_idx  = place_idx          # share env.place_idx, same Place objects
+        self.n_places   = len(place_list)
+
+        self.transitions = list(net.transitions)
+        self.trans_idx    = {t: i for i, t in enumerate(self.transitions)}
+        self.n_trans      = len(self.transitions)
+        self.n_layers     = n_layers
+
+        # ---- static topology, built once ----
+        p2t = defaultdict(list)   # trans_i -> [(place_i, weight), ...]  (consumption)
+        t2p = defaultdict(list)   # place_i -> [(trans_i, weight), ...]  (production)
+        for arc in net.arcs:
+            if arc.source in self.place_idx and arc.target in self.trans_idx:
+                p2t[self.trans_idx[arc.target]].append(
+                    (self.place_idx[arc.source], float(arc.weight))
+                )
+            elif arc.source in self.trans_idx and arc.target in self.place_idx:
+                t2p[self.place_idx[arc.target]].append(
+                    (self.trans_idx[arc.source], float(arc.weight))
+                )
+        self.p2t, self.t2p = p2t, t2p
+
+        # ---- learned per-node identity (the topology is fixed, so each
+        #      node can just learn "who it is") ----
+        self.place_id_emb = nn.Embedding(self.n_places, hidden_dim)
+        self.trans_id_emb = nn.Embedding(self.n_trans,  hidden_dim)
+        self.marking_proj = nn.Linear(1, hidden_dim)     # token count -> hidden
+
+        self.place_update = nn.ModuleList([
+            nn.Sequential(nn.Linear(hidden_dim * 2, hidden_dim), nn.ReLU(),
+                           nn.LayerNorm(hidden_dim))
+            for _ in range(n_layers)
+        ])
+        self.trans_update = nn.ModuleList([
+            nn.Sequential(nn.Linear(hidden_dim * 2, hidden_dim), nn.ReLU(),
+                           nn.LayerNorm(hidden_dim))
+            for _ in range(n_layers)
+        ])
+
+        # ---- remaining-prefix encoder (small, separate from the policy's) ----
+        self.prefix_emb = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
+        self.prefix_gru = nn.GRU(emb_dim, hidden_dim, batch_first=True)
+
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def _aggregate(self, src_emb, neighbor_lists, n_dst, device):
+        H = src_emb.size(-1)
+        out = torch.zeros(n_dst, H, device=device)
+        for dst_i, neighbors in neighbor_lists.items():
+            if not neighbors:
+                continue
+            idxs = torch.tensor([n[0] for n in neighbors], device=device)
+            w    = torch.tensor([n[1] for n in neighbors], device=device).unsqueeze(-1)
+            out[dst_i] = (src_emb[idxs] * w).sum(0) / w.sum()
+        return out
+
+    def graph_embed(self, marking_vec: torch.Tensor) -> torch.Tensor:
+        device  = marking_vec.device
+        place_h = self.place_id_emb.weight + self.marking_proj(marking_vec.unsqueeze(-1))
+        trans_h = self.trans_id_emb.weight
+
+        for l in range(self.n_layers):
+            trans_in     = self._aggregate(place_h, self.p2t, self.n_trans, device)
+            new_trans_h  = self.trans_update[l](torch.cat([trans_h, trans_in], -1))
+            place_in     = self._aggregate(trans_h, self.t2p, self.n_places, device)
+            new_place_h  = self.place_update[l](torch.cat([place_h, place_in], -1))
+            trans_h, place_h = new_trans_h, new_place_h
+
+        total    = marking_vec.sum().clamp(min=1.0)
+        weighted = (place_h * marking_vec.unsqueeze(-1)).sum(0) / total   # "where are the tokens"
+        pooled   = place_h.mean(0)                                        # global structural context
+        return torch.cat([weighted, pooled], -1)
+
+    def forward(self, marking_vec: torch.Tensor, remaining_ids: torch.Tensor) -> torch.Tensor:
+        g_emb = self.graph_embed(marking_vec)
+        _, h  = self.prefix_gru(self.prefix_emb(remaining_ids))
+        p_emb = h.squeeze(0).squeeze(0)
+        return self.head(torch.cat([g_emb, p_emb], -1)).squeeze(-1)
+    
+
+
+
+from collections import deque
+import random
+
+class HeuristicBuffer:
+    def __init__(self, capacity=20000):
+        self.data = deque(maxlen=capacity)
+
+    def add(self, marking_vec, remaining_prefix, true_cost):
+        self.data.append((marking_vec.detach().cpu(), list(remaining_prefix), float(true_cost)))
+
+    def sample(self, batch_size):
+        return random.sample(self.data, k=min(batch_size, len(self.data)))
+
+
+def train_heuristic_step(heuristic_net, opt, vocab, batch, device):
+    heuristic_net.train()
+    opt.zero_grad()
+    preds, targets = [], []
+    for marking_vec, remaining, true_cost in batch:
+        src = (torch.tensor([vocab.encode(remaining)], device=device) if remaining
+               else torch.zeros((1, 1), dtype=torch.long, device=device))
+        preds.append(heuristic_net(marking_vec.to(device), src))
+        targets.append(true_cost)
+    loss = nn.functional.smooth_l1_loss(torch.stack(preds),
+                                         torch.tensor(targets, device=device))
+    loss.backward()
+    nn.utils.clip_grad_norm_(heuristic_net.parameters(), 1.0)
+    opt.step()
+    return loss.item()
+
+
 
 import os 
 def save_episode_transitions(transitions, path):

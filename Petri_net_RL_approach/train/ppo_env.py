@@ -106,6 +106,17 @@ class AlignmentEnv:
         self.steps_without_progress = 0
         self.visited_states = {}
         return self.marking_vec()
+    
+    def _vec_for_marking(self, m) -> torch.Tensor:
+        if isinstance(m, tuple):
+            m = dict(m)
+        v = torch.zeros(self.n_places)
+        for pname, cnt in m.items():
+            for p, idx in self.place_idx.items():
+                if p.name == pname:
+                    v[idx] = float(cnt)
+                    break
+        return v
 
     def marking_vec(self):
         v = torch.zeros(self.n_places)
@@ -308,18 +319,9 @@ class AlignmentEnv:
     # Step
     # =========================================================================
 
-    def step(
-        self,
-        model,
-        valid_labels_mask,
-        move_id:              int,
-        label_id:             int,
-        prev_moves:           list,
-        prev_labels:          list,
-        labels_logits:        torch.Tensor,
-        attn_weights:         torch.Tensor,
-        moves_for_all_labels: list,
-        compute_reward: bool = True):
+    def step(self, model, valid_labels_mask, move_id, label_id,
+            prev_moves, prev_labels, labels_logits, attn_weights,
+            moves_for_all_labels, compute_reward=True, loop_depth=0):
 
 
         current_marking = self.marking
@@ -392,7 +394,8 @@ class AlignmentEnv:
         if compute_reward:
             total_reward, force_done = self.reward_function(
                 prev_moves, prev_labels, labels_logits, attn_weights,
-                moves_for_all_labels, current_marking, current_pos
+                moves_for_all_labels, current_marking, current_pos,
+                loop_depth=loop_depth
             )
         else:
             total_reward = 0.0
@@ -411,10 +414,9 @@ class AlignmentEnv:
     # Reward
     # =========================================================================
 
-    def reward_function(self,
-            new_moves, new_labels, labels_logits, attn_weights,
-            moves_for_all_labels, current_marking, current_pos
-        ):
+    def reward_function(self, new_moves, new_labels, labels_logits, attn_weights,
+                        moves_for_all_labels, current_marking, current_pos,
+                        loop_depth=0):
 
         label = new_labels[-1]
         move  = new_moves[-1]
@@ -442,6 +444,16 @@ class AlignmentEnv:
             start_marking=after_this_step_marking,
             start_pos=after_this_step_pos
         )
+
+        if getattr(self, "heuristic_buffer", None) is not None:
+            self.heuristic_buffer.add(
+                self._vec_for_marking(current_marking),
+                original_prefix[current_pos:], cost_before
+            )
+            self.heuristic_buffer.add(
+                self._vec_for_marking(after_this_step_marking),
+                original_prefix[after_this_step_pos:], cost_after
+            )
         # print("alignement before : ", alignment_before)
         # print("alignement after : ", alignment_after)
         
@@ -457,7 +469,7 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         reward += 0.7 * (cost_before - cost_after)
         reward -= 0.25
-        if move == "M":
+        if move == self.MOVE_SPACE[1]:  
             reward += 0.1
 
         # ------------------------------------------------------------------
@@ -492,8 +504,8 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         terminate = False
         # revisit penalty
-        reward -= 0.5 * (new_visit_count - 1)
-
+        # reward -= 0.5 * (new_visit_count - 1)
+        reward -= 0.5 * loop_depth
         # escape reward
         # if prev_visit_count >= 1 and new_state_is_novel:
         #     reward += 2.0 * min(prev_visit_count, 5)

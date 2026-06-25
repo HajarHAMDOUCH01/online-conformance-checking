@@ -10,6 +10,7 @@ import pm4py
 import yaml
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from pm4py.objects.log.importer.xes import importer as xes_importer
+from model.ppo_model import HeuristicBuffer, PetriHeuristicGNN
 
 # ── Load config ───────────────────────────────────────────────────────────────
 _CFG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -122,17 +123,14 @@ def ppo_update(env, model, opt, batch):
                 # graph that produced the action.
                 loop_depth = traj['loop_depths'][t]
 
-                if traj['dones'][t - 1] if t > 0 else False:
+                if t > 0 and traj['dones'][t - 1]:
+                    h = torch.zeros_like(h)   
                     break
-                # remaining_cost = int(traj['costs'][t])
+                remaining_cost = traj['costs'][t]
                 label_logits, val, h, _ = model.decode_step(
-                    pos,
-                    mv,
-                    h,
-                    enc_out,
-                    act_id,
-                    loop_depth=loop_depth
-                    # remaining_cost=remaining_cost
+                    pos, mv, h, enc_out, act_id,
+                    loop_depth=loop_depth,
+                    remaining_cost=remaining_cost
                 )
 
                 ll = label_logits.clone()
@@ -242,7 +240,7 @@ def main():
         a = float(trace.attributes.get("trace_fitness"))
         traces_fitnes_list.append(a)
 
-    threshold = 0.95
+    threshold = 0.9
     train_cases = [
         trace for i, trace in enumerate(log_all)
         if 0.85 < traces_fitnes_list[i] < threshold
@@ -271,7 +269,11 @@ def main():
         vocab.add(label)
 
     # ── Model ─────────────────────────────────────────────────────────────────
-    model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE))
+    heuristic_net    = PetriHeuristicGNN(net, env.place_list, env.place_idx, len(vocab))
+    heuristic_opt    = torch.optim.Adam(heuristic_net.parameters(), lr=1e-3)
+    heuristic_buffer = HeuristicBuffer()
+    env.heuristic_buffer = heuristic_buffer
+    model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE), heuristic_net)
     opt   = torch.optim.Adam(model.parameters(), lr=LR)
     start_episode = 0
     scheduler = torch.optim.lr_scheduler.LinearLR(
