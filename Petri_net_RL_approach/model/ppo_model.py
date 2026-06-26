@@ -5,7 +5,7 @@ from pm4py.objects.petri_net.obj import Marking
 from .dataset_utils import save_episode_transitions
 from train.ppo_env import _m_tuple   
 from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
-
+from train.ppo_env import _m_tuple, MOVE_COST
 def normalize_marking_tuple(marking):
 
     if isinstance(marking, tuple):
@@ -409,7 +409,129 @@ class ActorCritic(nn.Module):
                 offline_dataset,
                 dataset_path
             )
-        return data, n_invalid  
+        return data, n_invalid 
+
+
+
+    @torch.no_grad()
+    def generate_with_lookahead(
+        self,
+        src,
+        prefix,
+        env,
+        vocab,
+        top_k: int = 5,
+        max_len: int = 60,
+        compute_reward: bool = False,
+    ):
+        
+        self.eval()
+
+        data = dict(
+            labels_str=[], moves_str=[], rewards=[],
+            dones=[], positions=[], costs=[],
+        )
+
+        enc_out, h = self.encode(src)
+        mv = env.reset(prefix)
+        done = False
+        i = 0
+        _gen_visited: dict = {}
+
+        while not done and i < max_len:
+            act    = env.current_activity()
+            act_id = vocab.t2i.get(act, vocab.t2i["<UNK>"]) if act else 0
+            pos    = env.pos
+
+            state_key  = (pos, tuple(sorted(_m_tuple(env._marking_to_dict()))))
+            loop_depth = _gen_visited.get(state_key, 0)
+            _gen_visited[state_key] = loop_depth + 1
+
+            remaining = prefix[pos:]
+            src_remaining = (
+                torch.tensor([vocab.encode(remaining)], device=mv.device) if remaining
+                else torch.zeros((1, 1), dtype=torch.long, device=mv.device)
+            )
+            predicted_cost = self.heuristic_net(mv, src_remaining).item()
+            data['costs'].append(predicted_cost)
+
+            # one decode_step per real step — h evolves independent of the
+            # action that ends up chosen, so this is correct even though
+            # the action isn't selected until after this call
+            label_logits, value, h, attn_weights = self.decode_step(
+                pos, mv, h, enc_out, act_id,
+                loop_depth=loop_depth, remaining_cost=predicted_cost
+            )
+
+            valid_labels_mask = env.valid_label_mask()
+            policy_bias = torch.zeros(len(env.LABEL_SPACE), device=label_logits.device)
+            if i == 0:
+                policy_bias = self.prefix_policy_bias(
+                    env, valid_labels_mask, data['moves_str'], label_logits.device, 50.0
+                )
+
+            ll = label_logits.clone()
+            ll[0] = ll[0] + policy_bias
+            ll[0][~valid_labels_mask] = float('-inf')
+            probs = torch.softmax(ll[0], -1)
+
+            if torch.isnan(probs).any() or probs.sum() < 1e-9:
+                break
+
+            # restrict candidates to genuinely valid indices first, THEN
+            # rank by probability — avoids any float-underflow tie issues
+            # between low-prob valid actions and zeroed-out invalid ones
+            valid_idx   = valid_labels_mask.nonzero(as_tuple=True)[0]
+            valid_probs = probs[valid_idx]
+            k = max(1, min(top_k, valid_idx.numel()))
+            _, top_pos = torch.topk(valid_probs, k)
+            candidate_ids = valid_idx[top_pos].tolist()
+
+            current_m   = env._marking_to_dict()
+            current_pos = env.pos
+
+            best_score, best_label_id, best_move_id = None, None, None
+            for label_id in candidate_ids:
+                label_str = env.LABEL_SPACE[label_id]
+                move_id   = env.infere_move_type(label_id)
+                move_str  = env.MOVE_SPACE[move_id]
+
+                new_m, new_pos = env._simulate_fire(current_m, current_pos, move_str, label_str)
+
+                if new_pos >= len(prefix):
+                    h_next = 0.0     # prefix fully consumed — true cost-to-go is 0
+                else:
+                    next_src = torch.tensor([vocab.encode(prefix[new_pos:])], device=mv.device)
+                    h_next   = self.heuristic_net(env._vec_for_marking(new_m), next_src).item()
+
+                score = MOVE_COST[move_str] + h_next
+                if best_score is None or score < best_score:
+                    best_score, best_label_id, best_move_id = score, label_id, move_id
+
+            label_id, move_id = best_label_id, best_move_id
+            move_str  = env.MOVE_SPACE[move_id]
+            label_str = env.LABEL_SPACE[label_id]
+
+            moves_for_all_labels = [env.infere_move_type(j) for j in range(len(env.LABEL_SPACE))]
+            label_str, move_str, reward, done = env.step(
+                self, valid_labels_mask, move_id, label_id,
+                list(data['moves_str']), list(data['labels_str']),
+                label_logits[0], attn_weights, moves_for_all_labels,
+                compute_reward=compute_reward, loop_depth=loop_depth
+            )
+
+            data['positions'].append(pos)
+            data['rewards'].append(float(reward))
+            data['moves_str'].append(move_str)
+            data['labels_str'].append(label_str)
+            data['dones'].append(done)
+
+            mv = env.marking_vec()
+            i += 1
+            if done:
+                break
+
+        return data 
     
 
 

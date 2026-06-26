@@ -188,6 +188,7 @@ def load_checkpoint(
     checkpoint_path,
     model,
     optimizer=None,
+    heuristic_opt=None,
     scheduler=None,
     map_location="cpu"
 ):
@@ -206,6 +207,10 @@ def load_checkpoint(
     if scheduler is not None and "scheduler" in ckpt:
         scheduler.load_state_dict(ckpt["scheduler"])
         print("loaded scheduler")
+
+    if heuristic_opt is not None and "heuristic_optimizer" in ckpt:
+        heuristic_opt.load_state_dict(ckpt["heuristic_optimizer"])
+        print("loaded heuristic_optimizer")
 
     vocab = ckpt.get("vocab", None)
     start_episode = ckpt.get("episode", 0)
@@ -356,6 +361,7 @@ def main():
             "episode": ep + 1,
             "state": model.state_dict(),
             "optimizer": opt.state_dict(),
+            "heuristic_optimizer": heuristic_opt.state_dict(),
             "scheduler": scheduler.state_dict(),
             "vocab": vocab,
         }, f"ppo_checkpoint_ep_{ep+1}.pt")
@@ -370,3 +376,70 @@ def main():
 
 if __name__ == "__main__":
     main()
+    df = pd.read_csv(DS_CSV)
+    print(df.shape)
+    print(df.head())
+
+    df["prefix_activities"] = df["prefix_activities"].apply(ast.literal_eval)
+    df = df[df["aligned_prefix"].notna()]
+
+    df["aligned_prefix"] = df["aligned_prefix"].apply(ast.literal_eval)
+    df["step_types"]     = df["step_types"].apply(ast.literal_eval)
+
+    log_all = xes_importer.apply(XES_PATH)
+    traces_fitnes_list = []
+    for trace in log_all:
+        a = float(trace.attributes.get("trace_fitness"))
+        traces_fitnes_list.append(a)
+
+    threshold = 0.9
+    train_cases = [
+        trace for i, trace in enumerate(log_all)
+        if 0.85 < traces_fitnes_list[i] < threshold
+    ]
+    print(log_all)
+    train_cases_ids = [trace.attributes["concept:name"] for trace in train_cases]
+    df["case_id"] = df["case_id"].astype(str)
+    df    = df[df["case_id"].isin(train_cases_ids)].reset_index(drop=True)
+    cases = df["case_id"].unique()
+    print(f"Training (PPO) on {len(cases)} cases (between 0.85 and 0.95), {len(df)} rows")
+
+    # ── Environment ───────────────────────────────────────────────────────────
+    net, im, fm = pm4py.read_pnml(PNML_PATH)
+    print("Initial marking:", im)
+    print("genrating final marking with pm4py : \n")
+    sink_place = next(p for p in net.places if p.name == "sink")
+    fm = pm4py.generate_marking(net, sink_place)
+    print("Final marking  :", fm)
+
+    labels = [t.label for t in net.transitions if t.label is not None]
+    env    = AlignmentEnv(net, im, labels)
+
+    # ── Vocabulary ────────────────────────────────────────────────────────────
+    vocab = Vocab()
+    for label in env.LABEL_SPACE:
+        vocab.add(label)
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    heuristic_net    = PetriHeuristicGNN(net, env.place_list, env.place_idx, len(vocab))
+    heuristic_opt    = torch.optim.Adam(heuristic_net.parameters(), lr=1e-3)
+    heuristic_buffer = HeuristicBuffer()
+    env.heuristic_buffer = heuristic_buffer
+    model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE), heuristic_net)
+    
+    for idx, cid in enumerate(cases):
+        case_df = df[df["case_id"] == cid].sort_values("prefix_length")
+        for _, row in case_df.iterrows():
+            prefix = row["prefix_activities"]
+            if not prefix:
+                continue
+            src = torch.tensor([vocab.encode(prefix)])
+
+            plain_traj, _ = model.generate(src, prefix, env, vocab, dataset_path=None)
+            lookahead_traj = model.generate_with_lookahead(src, prefix, env, vocab, top_k=5)
+
+            print("prefix          :", prefix)
+            print("plain labels    :", plain_traj["labels_str"])
+            print("plain moves     :", plain_traj["moves_str"])
+            print("lookahead labels:", lookahead_traj["labels_str"])
+            print("lookahead moves :", lookahead_traj["moves_str"])

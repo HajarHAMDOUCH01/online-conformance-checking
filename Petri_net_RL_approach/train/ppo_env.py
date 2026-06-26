@@ -7,8 +7,7 @@ import torch
 from pm4py.objects.petri_net.obj import Marking
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
-LOOKAHEAD_LAMBDA = 0.5
-
+MOVE_COST = {"S": 0.0, "M": 1.0, "L": 1.0}
 def normalize_marking_tuple(marking):
 
     if isinstance(marking, tuple):
@@ -385,8 +384,11 @@ class AlignmentEnv:
                         # )
                         fired = True
 
-            if move == "S":
+            if move == "S" and fired:
                 self.pos += 1
+            if move == "S" and not fired:
+                print("ERRRRRRROR")
+                raise RuntimeError("Why Sync move not fired !")
 
         prev_moves.append(move)
         prev_labels.append(label)
@@ -409,6 +411,48 @@ class AlignmentEnv:
             total_reward,
             done
         )
+
+
+    def _simulate_fire(self, m_dict: dict, pos: int, move: str, label: str):
+        
+        new_pos = pos
+        new_m   = m_dict
+
+        if move == "L":
+            new_pos = pos + 1
+
+        if move in ("S", "M"):
+            current_tup = _m_tuple(m_dict)
+            fired = False
+
+            for t in self._label_to_trans.get(label, []):
+                if not self._is_enabled(m_dict, t):
+                    continue
+                candidate = self._fire(m_dict, t)
+                if _m_tuple(candidate) == current_tup:
+                    continue
+                if self._sink_place_name in candidate and move == "M":
+                    continue
+                new_m = candidate
+                fired = True
+                break
+
+            if not fired:
+                silent_path, matching_t = self._silent_path_to(m_dict, label)
+                if silent_path is not None and matching_t is not None:
+                    target_m  = self._replay_silent_path(m_dict, silent_path)
+                    candidate = self._fire(target_m, matching_t)
+                    valid = (_m_tuple(candidate) != current_tup) and (
+                        self._sink_place_name not in candidate or move != "M"
+                    )
+                    if valid:
+                        new_m = candidate
+                        fired = True
+
+            if move == "S":
+                new_pos = pos + 1
+
+        return new_m, new_pos
 
     # =========================================================================
     # Reward
@@ -459,7 +503,7 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         # Base reward: A* cost improvement 
         # ------------------------------------------------------------------
-        MOVE_COST = {"S": -1.0, "M": 1.0, "L": 2.0}
+        
         delta_h      = cost_before - cost_after        
         move_cost    = MOVE_COST[move]                  
         inefficiency = move_cost - delta_h              
