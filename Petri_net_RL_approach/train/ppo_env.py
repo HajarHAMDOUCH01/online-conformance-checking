@@ -362,6 +362,7 @@ class AlignmentEnv:
                     new_m    = self._fire(target_m, matching_t)
                     new_tup  = _m_tuple(new_m)
 
+                    # if the agent samples a model move that takes it to a marking in the final place, don't fire that move
                     valid = (new_tup != current_tup) and (
                         self._sink_place_name not in new_m or move != "M"
                     )
@@ -369,12 +370,13 @@ class AlignmentEnv:
                         target_m = self._replay_silent_path(
                         current_m,
                         silent_path
-                    )
+                        )
 
                         self.marking = self._fire(
                             target_m,
                             matching_t
                         )
+                        fired = True
                         # for tau in silent_path:
                         #     self.marking = self.sem.weak_execute(
                         #         tau, self.net, self.marking
@@ -382,11 +384,18 @@ class AlignmentEnv:
                         # self.marking = self.sem.weak_execute(
                         #     matching_t, self.net, self.marking
                         # )
-                        fired = True
+                        
+                    else: 
+                        self.marking = current_marking
+                        self.pos = current_pos
+                        return None, None, None, None
 
             if move == "S" and fired:
                 self.pos += 1
             if move == "S" and not fired:
+                print(matching_t)
+                print(silent_path)
+                print(valid)
                 print("ERRRRRRROR")
                 raise RuntimeError("Why Sync move not fired !")
 

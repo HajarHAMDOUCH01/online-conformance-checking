@@ -386,75 +386,75 @@ def main():
 
 
 if __name__ == "__main__":
-    # main()
-    df = pd.read_csv(DS_CSV)
-    print(df.shape)
-    print(df.head())
+    main()
+    # df = pd.read_csv(DS_CSV)
+    # print(df.shape)
+    # print(df.head())
 
-    df["prefix_activities"] = df["prefix_activities"].apply(ast.literal_eval)
-    df = df[df["aligned_prefix"].notna()]
+    # df["prefix_activities"] = df["prefix_activities"].apply(ast.literal_eval)
+    # df = df[df["aligned_prefix"].notna()]
 
-    df["aligned_prefix"] = df["aligned_prefix"].apply(ast.literal_eval)
-    df["step_types"]     = df["step_types"].apply(ast.literal_eval)
+    # df["aligned_prefix"] = df["aligned_prefix"].apply(ast.literal_eval)
+    # df["step_types"]     = df["step_types"].apply(ast.literal_eval)
 
-    log_all = xes_importer.apply(XES_PATH)
-    traces_fitnes_list = []
-    for trace in log_all:
-        a = float(trace.attributes.get("trace_fitness"))
-        traces_fitnes_list.append(a)
+    # log_all = xes_importer.apply(XES_PATH)
+    # traces_fitnes_list = []
+    # for trace in log_all:
+    #     a = float(trace.attributes.get("trace_fitness"))
+    #     traces_fitnes_list.append(a)
 
-    threshold = 0.9
-    train_cases = [
-        trace for i, trace in enumerate(log_all)
-        if traces_fitnes_list[i] < 0.85
-    ]
-    print(log_all)
-    train_cases_ids = [trace.attributes["concept:name"] for trace in train_cases]
-    df["case_id"] = df["case_id"].astype(str)
-    df    = df[df["case_id"].isin(train_cases_ids)].reset_index(drop=True)
-    cases = df["case_id"].unique()
-    print(f"Training (PPO) on {len(cases)} cases (between 0.85 and 0.95), {len(df)} rows")
+    # threshold = 0.9
+    # train_cases = [
+    #     trace for i, trace in enumerate(log_all)
+    #     if traces_fitnes_list[i] < 0.85
+    # ]
+    # print(log_all)
+    # train_cases_ids = [trace.attributes["concept:name"] for trace in train_cases]
+    # df["case_id"] = df["case_id"].astype(str)
+    # df    = df[df["case_id"].isin(train_cases_ids)].reset_index(drop=True)
+    # cases = df["case_id"].unique()
+    # print(f"Training (PPO) on {len(cases)} cases (between 0.85 and 0.95), {len(df)} rows")
 
-    # ── Environment ───────────────────────────────────────────────────────────
-    net, im, fm = pm4py.read_pnml(PNML_PATH)
-    print("Initial marking:", im)
-    print("genrating final marking with pm4py : \n")
-    sink_place = next(p for p in net.places if p.name == "sink")
-    fm = pm4py.generate_marking(net, sink_place)
-    print("Final marking  :", fm)
+    # # ── Environment ───────────────────────────────────────────────────────────
+    # net, im, fm = pm4py.read_pnml(PNML_PATH)
+    # print("Initial marking:", im)
+    # print("genrating final marking with pm4py : \n")
+    # sink_place = next(p for p in net.places if p.name == "sink")
+    # fm = pm4py.generate_marking(net, sink_place)
+    # print("Final marking  :", fm)
 
-    labels = [t.label for t in net.transitions if t.label is not None]
-    env    = AlignmentEnv(net, im, labels)
+    # labels = [t.label for t in net.transitions if t.label is not None]
+    # env    = AlignmentEnv(net, im, labels)
 
-    # ── Vocabulary ────────────────────────────────────────────────────────────
-    vocab = Vocab()
-    for label in env.LABEL_SPACE:
-        vocab.add(label)
+    # # ── Vocabulary ────────────────────────────────────────────────────────────
+    # vocab = Vocab()
+    # for label in env.LABEL_SPACE:
+    #     vocab.add(label)
 
-    # ── Model ─────────────────────────────────────────────────────────────────
-    heuristic_net    = PetriHeuristicGNN(net, env.place_list, env.place_idx, len(vocab))
-    heuristic_opt    = torch.optim.Adam(heuristic_net.parameters(), lr=1e-3)
-    heuristic_buffer = HeuristicBuffer()
-    env.heuristic_buffer = heuristic_buffer
-    model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE), heuristic_net)
-    # load from checkpoint 
-    start_episode, saved_vocab = load_checkpoint(
-    PPO_CHECKPOINT,
-    model
-    ) 
-    for idx, cid in enumerate(cases):
-        case_df = df[df["case_id"] == cid].sort_values("prefix_length")
-        for _, row in case_df.iterrows():
-            prefix = row["prefix_activities"]
-            if not prefix:
-                continue
-            src = torch.tensor([vocab.encode(prefix)])
+    # # ── Model ─────────────────────────────────────────────────────────────────
+    # heuristic_net    = PetriHeuristicGNN(net, env.place_list, env.place_idx, len(vocab))
+    # heuristic_opt    = torch.optim.Adam(heuristic_net.parameters(), lr=1e-3)
+    # heuristic_buffer = HeuristicBuffer()
+    # env.heuristic_buffer = heuristic_buffer
+    # model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE), heuristic_net)
+    # # load from checkpoint 
+    # start_episode, saved_vocab = load_checkpoint(
+    # PPO_CHECKPOINT,
+    # model
+    # ) 
+    # for idx, cid in enumerate(cases):
+    #     case_df = df[df["case_id"] == cid].sort_values("prefix_length")
+    #     for _, row in case_df.iterrows():
+    #         prefix = row["prefix_activities"]
+    #         if not prefix:
+    #             continue
+    #         src = torch.tensor([vocab.encode(prefix)])
 
-            plain_traj, _ = model.generate(src, prefix, env, vocab, dataset_path=None)
-            lookahead_traj = model.generate_with_lookahead(src, prefix, env, vocab, top_k=5)
+    #         plain_traj, _ = model.generate(src, prefix, env, vocab, dataset_path=None)
+    #         lookahead_traj = model.generate_with_lookahead(src, prefix, env, vocab, top_k=5)
 
-            print("prefix          :", prefix)
-            print("plain labels    :", plain_traj["labels_str"])
-            print("plain moves     :", plain_traj["moves_str"])
-            print("lookahead labels:", lookahead_traj["labels_str"])
-            print("lookahead moves :", lookahead_traj["moves_str"])
+    #         print("prefix          :", prefix)
+    #         print("plain labels    :", plain_traj["labels_str"])
+    #         print("plain moves     :", plain_traj["moves_str"])
+    #         print("lookahead labels:", lookahead_traj["labels_str"])
+    #         print("lookahead moves :", lookahead_traj["moves_str"])
