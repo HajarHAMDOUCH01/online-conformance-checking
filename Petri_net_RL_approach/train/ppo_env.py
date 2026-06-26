@@ -497,13 +497,9 @@ class AlignmentEnv:
             # reward += 15
             terminate = True
 
-        # print(
-        #     move,
-        #     cost_before,
-        #     cost_after,
-        #     dist_before,
-        #     dist_after,
-        #     reward
-        # )
+        print(
+            move,
+            reward
+        )
 
         return reward, terminate
