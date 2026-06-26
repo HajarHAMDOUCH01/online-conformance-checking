@@ -7,7 +7,7 @@ import torch
 from pm4py.objects.petri_net.obj import Marking
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
-MOVE_COST = {"S": 0.0, "M": 1.0, "L": 2.0}
+MOVE_COST = {"S": -1.0, "M": 1.0, "L": 2.0}
 def normalize_marking_tuple(marking):
 
     if isinstance(marking, tuple):
