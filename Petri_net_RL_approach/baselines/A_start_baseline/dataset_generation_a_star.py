@@ -29,7 +29,7 @@ XES_PATH         = _paths["xes_path"]
 
 # ── Move costs  ──────────────────────
 COST_SYNC  = 0   # synchronous move  - log and model agree
-COST_LOG   = 1   # log-only move     - event in log, not in model
+COST_LOG   = 2   # log-only move     - event in log, not in model
 COST_MODEL = 1   # model-only move   - transition fired, no log event
 COST_SILENT = 0  # silent (tau) transition - always free
 

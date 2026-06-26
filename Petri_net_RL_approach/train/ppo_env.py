@@ -459,7 +459,7 @@ class AlignmentEnv:
         # ------------------------------------------------------------------
         # Base reward: A* cost improvement 
         # ------------------------------------------------------------------
-        MOVE_COST = {"S": -1.0, "M": 1.0, "L": 1.0}
+        MOVE_COST = {"S": -1.0, "M": 1.0, "L": 2.0}
         delta_h      = cost_before - cost_after        
         move_cost    = MOVE_COST[move]                  
         inefficiency = move_cost - delta_h              
