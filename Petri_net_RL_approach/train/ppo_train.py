@@ -319,10 +319,10 @@ def main():
                 src = torch.tensor([vocab.encode(prefix)])
 
                 model.eval()
-                if idx % 100 == 0:
-                    print("prefix        :", prefix)
-                    print("gt labels     :", GT_activity_labels)
-                    print("gt move_types :", GT_move_types)
+                # if idx % 100 == 0:
+                #     print("prefix        :", prefix)
+                #     print("gt labels     :", GT_activity_labels)
+                #     print("gt move_types :", GT_move_types)
 
                 with torch.no_grad():
                     traj, n_invalid = model.generate(
@@ -337,9 +337,9 @@ def main():
                 if not traj:
                     skipped += 1
                     continue
-                if idx % 100 == 0:
-                    print("generated labels :", traj["labels_str"])
-                    print("corresponding move types :", traj["moves_str"])
+                # if idx % 100 == 0:
+                #     print("generated labels :", traj["labels_str"])
+                #     print("corresponding move types :", traj["moves_str"])
 
                 if len(batch) >= BATCH_SIZE:
                     _flush_batch()
