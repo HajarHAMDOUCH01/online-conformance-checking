@@ -50,16 +50,11 @@ class ActorCritic(nn.Module):
         self.enc          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
         self.marking_proj = nn.Linear(n_places, emb_dim, bias=False)
 
-        # fuse_proj now takes 4 × emb_dim:
-        #   marking_emb | activity_emb | pos_emb | loop_depth_emb
-        self.cost_proj = nn.Linear(1, emb_dim)     # replaces cost_emb
+        self.cost_proj = nn.Linear(1, emb_dim)    
         self.fuse_proj = nn.Linear(emb_dim * 5, emb_dim, bias=False)
 
         self.dec          = nn.GRU(emb_dim, hidden_dim, batch_first=True)
         self.pos_emb      = nn.Embedding(70, emb_dim)
-
-        # loop-depth embedding: 0 = never visited, 1..max_loop_depth = revisit count
-        # index 0 -> first visit, index max_loop_depth -> "deep in a loop"
         self.loop_depth_emb = nn.Embedding(max_loop_depth + 1, emb_dim)
 
         self.attn_q   = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -75,12 +70,6 @@ class ActorCritic(nn.Module):
         nn.init.zeros_(self.label_head.bias)
         nn.init.zeros_(self.critic.bias)
         nn.init.orthogonal_(self.fuse_proj.weight)
-        # nn.init.normal_(
-        #     self.cost_emb.weight,
-        #     mean=0.0,
-        #     std=0.01
-        # )
-        # loop_depth_emb: initialise with small normal so depth=0 starts near zero
         nn.init.normal_(self.loop_depth_emb.weight, mean=0.0, std=0.01)
 
     # -------------------------------------------------------------------------
@@ -121,14 +110,7 @@ class ActorCritic(nn.Module):
         depth_emb = self.loop_depth_emb(
             torch.tensor([[depth_id]], device=device)
         )                                                              # (1,1,E)
-        # cost_id = min(
-        #     remaining_cost,
-        #     self.cost_emb.num_embeddings - 1
-        # )
 
-        # cost_emb = self.cost_emb(
-        #     torch.tensor([[cost_id]], device=device)
-        # )
         cost_t   = torch.tensor([[[remaining_cost]]], device=device, dtype=torch.float32)
         cost_emb = self.cost_proj(cost_t)
         inp = self.fuse_proj(torch.cat(
@@ -256,12 +238,6 @@ class ActorCritic(nn.Module):
         n_invalid = 0
         done = False
         i = 0
-
-        # ------------------------------------------------------------------
-        # State-visit counter: (pos, marking_tuple) -> visit count.
-        # This is the ground truth used by the reward function AND by the
-        # loop_depth feature fed into decode_step.  They must be in sync.
-        # ------------------------------------------------------------------
         _gen_visited: dict = {}
 
         while not done:
@@ -273,17 +249,6 @@ class ActorCritic(nn.Module):
             current_marking = normalize_marking_tuple(
                 env._marking_to_dict()
             )
-
-            # _, remaining_cost, _ = _astar_prefix_alignment(
-            #     prefix=prefix,
-            #     start_marking=current_marking,
-            #     start_pos=pos
-            # )
-            # cost_id = min(int(remaining_cost), 99)
-
-            # --- compute loop_depth BEFORE incrementing the counter --------
-            # loop_depth = how many times we've already been in this state
-            # before the current step, i.e. the count *prior* to this visit.
             state_key  = (pos, tuple(sorted(_m_tuple(env._marking_to_dict()))))
             loop_depth = _gen_visited.get(state_key, 0)
             # Save current state for offline RL
@@ -391,7 +356,7 @@ class ActorCritic(nn.Module):
 
             next_state_key = (
                 next_pos,
-                next_marking   # already a sorted tuple from normalize_marking_tuple()
+                next_marking   
             )
 
             next_loop_depth = _gen_visited.get(
@@ -405,7 +370,6 @@ class ActorCritic(nn.Module):
                 "position": next_pos,
                 "activity_id": next_act_id,
                 "loop_depth": next_loop_depth,
-                # "remaining_cost": next_cost_id
             }
             if dataset_path is not None:
                 offline_dataset.append({
@@ -430,7 +394,6 @@ class ActorCritic(nn.Module):
             data['old_lps'].append(old_lp)
             data['values'].append(value.item())
             data['dones'].append(done)
-            # data['costs'].append(cost_id)
 
             mv = new_mv
             i += 1

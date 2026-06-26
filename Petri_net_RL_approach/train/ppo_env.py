@@ -456,21 +456,16 @@ class AlignmentEnv:
             )
         # print("alignement before : ", alignment_before)
         # print("alignement after : ", alignment_after)
-        
-        
-
-        # if cost_after >= cost_before:
-        #     self.steps_without_progress += 1
-        # else:
-        #     self.steps_without_progress = 0
-
         # ------------------------------------------------------------------
         # Base reward: A* cost improvement minus a small step penalty
         # ------------------------------------------------------------------
-        reward += 0.7 * (cost_before - cost_after)
-        reward -= 0.25
-        if move == self.MOVE_SPACE[1]:  
-            reward += 0.1
+        MOVE_COST = {"S": 0.0, "M": 1.0, "L": 2.0}
+        # this function only based on reamining cost , the reward function should be based on also travered path so far
+        delta_h      = cost_before - cost_after        
+        move_cost    = MOVE_COST[move]                  
+        inefficiency = move_cost - delta_h              
+        reward       = -inefficiency
+
 
         # ------------------------------------------------------------------
         # State-visit accounting
@@ -486,40 +481,16 @@ class AlignmentEnv:
         )
 
         prev_visit_count = self.visited_states.get(prev_state_key, 0)
-
-        # check novelty of destination BEFORE incrementing its counter
         new_state_is_novel = new_state_key not in self.visited_states
 
         self.visited_states[new_state_key] = (
             self.visited_states.get(new_state_key, 0) + 1
         )
         new_visit_count = self.visited_states[new_state_key]
-
-        # ------------------------------------------------------------------
-        # Escape bonus: agent was in a previously-visited state and moved
-        # to a state it has never been in before.
-        # This creates a positive gradient for the exact action that breaks
-        # the loop, paired with the loop_depth feature so the policy can
-        # learn WHEN to diversify (high depth) vs exploit (depth 0).
-        # ------------------------------------------------------------------
         terminate = False
         # revisit penalty
         # reward -= 0.5 * (new_visit_count - 1)
-        reward -= 0.5 * loop_depth
-        # escape reward
-        # if prev_visit_count >= 1 and new_state_is_novel:
-        #     reward += 2.0 * min(prev_visit_count, 5)
-
-        # no progress penalty
-        # reward -= 0.2 * self.steps_without_progress
-
-        # catastrophic loop
-        # if new_visit_count >= 8:
-        #     reward -= 10
-
-        # # catastrophic stagnation
-        # if self.steps_without_progress >= 8:
-        #     reward -= 10
+        # reward -= 0.5 * loop_depth
 
         # completion
         if after_this_step_pos == len(original_prefix):
