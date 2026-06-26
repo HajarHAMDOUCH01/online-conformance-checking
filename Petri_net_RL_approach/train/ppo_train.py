@@ -54,7 +54,7 @@ from model.ppo_model import HeuristicBuffer, PetriHeuristicGNN
 from ppo_env import AlignmentEnv
 from model.ppo_model import ActorCritic
 from model.model import Vocab
-
+from model.ppo_model import train_heuristic_step
 sys.modules['__main__'].Vocab    = Vocab
 sys.modules['model'].Vocab       = Vocab
 sys.modules['model.model'].Vocab = Vocab
@@ -279,7 +279,10 @@ def main():
     heuristic_buffer = HeuristicBuffer()
     env.heuristic_buffer = heuristic_buffer
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE), heuristic_net)
-    opt   = torch.optim.Adam(model.parameters(), lr=LR)
+    ppo_params = [p for n, p in model.named_parameters()
+              if not n.startswith("heuristic_net.")]
+
+    opt = torch.optim.Adam(ppo_params, lr=LR)
     start_episode = 0
     scheduler = torch.optim.lr_scheduler.LinearLR(
         opt,
@@ -309,6 +312,14 @@ def main():
             total_loss += l
             n_updates  += 1
             batch.clear()
+
+            # Train the heuristic net on buffered A* samples
+            if len(heuristic_buffer.data) >= 64:
+                h_batch = heuristic_buffer.sample(64)
+                h_loss  = train_heuristic_step(
+                    heuristic_net, heuristic_opt, vocab, h_batch, device="cpu"
+                )
+                print(f"  heuristic_loss={h_loss:.4f}  buffer_size={len(heuristic_buffer.data)}")
 
         for idx, cid in enumerate(cases):
             case_df = df[df["case_id"] == cid].sort_values("prefix_length")
@@ -375,7 +386,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
     df = pd.read_csv(DS_CSV)
     print(df.shape)
     print(df.head())
@@ -395,7 +406,7 @@ if __name__ == "__main__":
     threshold = 0.9
     train_cases = [
         trace for i, trace in enumerate(log_all)
-        if 0.85 < traces_fitnes_list[i] < threshold
+        if traces_fitnes_list[i] < 0.85
     ]
     print(log_all)
     train_cases_ids = [trace.attributes["concept:name"] for trace in train_cases]
@@ -426,7 +437,11 @@ if __name__ == "__main__":
     heuristic_buffer = HeuristicBuffer()
     env.heuristic_buffer = heuristic_buffer
     model = ActorCritic(len(vocab), env.n_places, len(env.LABEL_SPACE), heuristic_net)
-    
+    # load from checkpoint 
+    start_episode, saved_vocab = load_checkpoint(
+    PPO_CHECKPOINT,
+    model
+    ) 
     for idx, cid in enumerate(cases):
         case_df = df[df["case_id"] == cid].sort_values("prefix_length")
         for _, row in case_df.iterrows():
