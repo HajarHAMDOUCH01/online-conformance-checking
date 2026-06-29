@@ -589,103 +589,129 @@ def align_prefix(activities: list) -> dict:
     )
     
 
-# =============================================================================
-# Load XES log, filter low-fitness traces
-# =============================================================================
-print("\n" + "=" * 70)
-print("Loading XES event log")
-print("=" * 70)
 
-log_all = xes_importer.apply(XES_PATH)
-traces_fitnes_list = []
-for trace in log_all:
-    a = float(trace.attributes.get("trace_fitness"))
-    traces_fitnes_list.append(a)
+def main():
+    # =============================================================================
+    # Load XES log, filter low-fitness traces
+    # =============================================================================
+    print("\n" + "=" * 70)
+    print("Loading XES event log")
+    print("=" * 70)
 
-threshold = 0.90
-neg_traces = [
-    trace for i, trace in enumerate(log_all)
-    if traces_fitnes_list[i] < threshold
-]
-# print(f"training set : {len(neg_traces)} traces in (0.85, {threshold}) out of {len(log_all)} total")
+    log_all = xes_importer.apply(XES_PATH)
+    traces_fitnes_list = []
+    for trace in log_all:
+        a = float(trace.attributes.get("trace_fitness"))
+        traces_fitnes_list.append(a)
 
-max_trace = max(neg_traces, key=len)
+    threshold = 0.95
+    neg_traces = [
+        trace for i, trace in enumerate(log_all)
+        if traces_fitnes_list[i] < threshold
+    ]
+    # print(f"training set : {len(neg_traces)} traces in (0.85, {threshold}) out of {len(log_all)} total")
 
-print(f"Total traces              : {len(log_all)}")
-print(f"Low-fitness traces < {threshold} : {len(neg_traces)}")
-print(f"Maximum trace length      : {len(max_trace)}")
-print(f"Longest trace             : {max_trace}")
-print(f"training is on traces between (0.85 and 0.95) and test is on traces under 0.85")
-# =============================================================================
-# Dataset generation loop
-# =============================================================================
-print("\n" + "=" * 70)
-print("Dataset generation (A* prefix alignments)")
-print("=" * 70)
+    max_trace = max(neg_traces, key=len)
 
-os.makedirs(os.path.dirname(DS_CSV), exist_ok=True)
-write_header   = not os.path.exists(DS_CSV)
-t_start        = time.time()
-total_prefixes = 0
-errors         = 0
+    print(f"Total traces              : {len(log_all)}")
+    print(f"Low-fitness traces < {threshold} : {len(neg_traces)}")
+    print(f"Maximum trace length      : {len(max_trace)}")
+    print(f"Longest trace             : {max_trace}")
+    # print(f"training is on traces between (0.85 and 0.95) and test is on traces under 0.85")
+    # =============================================================================
+    # Dataset generation loop
+    # =============================================================================
+    print("\n" + "=" * 70)
+    print("Dataset generation (A* prefix alignments)")
+    print("=" * 70)
 
-for idx, trace in enumerate(neg_traces):
-    case_id    = str(trace.attributes.get("concept:name", f"case_{idx}"))
-    activities = [str(ev["concept:name"]) for ev in trace]
-    rows       = []
+    os.makedirs(os.path.dirname(DS_CSV), exist_ok=True)
+    write_header   = not os.path.exists(DS_CSV)
+    t_start        = time.time()
+    total_prefixes = 0
+    errors         = 0
 
-    for k in range(1, len(activities) + 1):
+    for idx, trace in enumerate(neg_traces):
+        case_id    = str(trace.attributes.get("concept:name", f"case_{idx}"))
+        activities = [str(ev["concept:name"]) for ev in trace]
+        rows       = []
 
-        result = align_prefix(activities[:k])
+        for k in range(1, len(activities) + 1):
 
-        if result.get("error"):
-            errors += 1
-        
+            result = align_prefix(activities[:k])
+
+            if result.get("error"):
+                errors += 1
+            
 
 
-        rows.append({
-            "queued_states" : result.get("queued_states"),
-            "traversed_arcs" : result.get("traversed_arcs"),
-            "visited_states" : result.get("visited_states"),
-            "alignment_time_sec": result.get("alignment_time_sec"),
-            "case_id":           case_id,
-            "prefix_length":     k,
-            "prefix_activities": str(activities[:k]),
-            "aligned_prefix":    str(result.get("aligned_prefix")),
-            "step_types":        str(result.get("step_types")),
-            "cost":              result.get("cost"),
-            "sync_moves":        result.get("sync_moves"),
-            "log_moves":         result.get("log_moves"),
-            "model_moves":       result.get("model_moves"),
-            "is_conforming":     result.get("is_conforming"),
-            "error":             result.get("error"),
+            rows.append({
+                "queued_states" : result.get("queued_states"),
+                "traversed_arcs" : result.get("traversed_arcs"),
+                "visited_states" : result.get("visited_states"),
+                "alignment_time_sec": result.get("alignment_time_sec"),
+                "case_id":           case_id,
+                "prefix_length":     k,
+                "prefix_activities": str(activities[:k]),
+                "aligned_prefix":    str(result.get("aligned_prefix")),
+                "step_types":        str(result.get("step_types")),
+                "cost":              result.get("cost"),
+                "sync_moves":        result.get("sync_moves"),
+                "log_moves":         result.get("log_moves"),
+                "model_moves":       result.get("model_moves"),
+                "is_conforming":     result.get("is_conforming"),
+                "error":             result.get("error"),
 
-        })
-        # for step_type in rows[-1]["step_types"]:
-        #     if step_type == "M":
+            })
+            # for step_type in rows[-1]["step_types"]:
+            #     if step_type == "M":
 
-        #         print("original prefix : ", rows[-1]["prefix_activities"])
-        #         print("aligned prefix : ", rows[-1]["aligned_prefix"])
-        #         print("alignement move types : ", rows[-1]["step_types"])
+            #         print("original prefix : ", rows[-1]["prefix_activities"])
+            #         print("aligned prefix : ", rows[-1]["aligned_prefix"])
+            #         print("alignement move types : ", rows[-1]["step_types"])
 
-    pd.DataFrame(rows).to_csv(
-        DS_CSV, mode="a", header=write_header, index=False
-    )
-    write_header    = False
-    total_prefixes += len(rows)
+        columns = [
+            "queued_states",
+            "traversed_arcs",
+            "visited_states",
+            "alignment_time_sec",
+            "case_id",
+            "prefix_length",    
+            "prefix_activities",
+            "aligned_prefix",
+            "step_types",
+            "cost",
+            "sync_moves",
+            "log_moves",
+            "model_moves",
+            "is_conforming",
+            "error",
+        ]
 
-    elapsed = time.time() - t_start
-    avg_s   = elapsed / (idx + 1)
-    eta_s   = avg_s * (len(neg_traces) - idx - 1)
-
-    if (idx + 1) % 50 == 0 or idx == 0:
-        print(
-            f"  [{idx+1:4d}/{len(neg_traces)}]  "
-            f"case={case_id!r}  prefixes={len(rows)}  "
-            f"elapsed={elapsed:.1f}s  ETA={eta_s:.0f}s  "
-            f"errors={errors}"
+        pd.DataFrame(rows, columns=columns).to_csv(
+            DS_CSV,
+            mode="a",
+            header=write_header,
+            index=False,
         )
+        write_header    = False
+        total_prefixes += len(rows)
 
-print(f"\nDone. Total prefixes written : {total_prefixes}")
-print(f"      Errors                 : {errors}")
-print(f"      Saved -> {DS_CSV}")
+        elapsed = time.time() - t_start
+        avg_s   = elapsed / (idx + 1)
+        eta_s   = avg_s * (len(neg_traces) - idx - 1)
+
+        if (idx + 1) % 50 == 0 or idx == 0:
+            print(
+                f"  [{idx+1:4d}/{len(neg_traces)}]  "
+                f"case={case_id!r}  prefixes={len(rows)}  "
+                f"elapsed={elapsed:.1f}s  ETA={eta_s:.0f}s  "
+                f"errors={errors}"
+            )
+
+    print(f"\nDone. Total prefixes written : {total_prefixes}")
+    print(f"      Errors                 : {errors}")
+    print(f"      Saved -> {DS_CSV}")
+
+if __name__ == "__main__":
+    main()

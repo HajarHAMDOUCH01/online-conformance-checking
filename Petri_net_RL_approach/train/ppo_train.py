@@ -245,22 +245,22 @@ def main():
         a = float(trace.attributes.get("trace_fitness"))
         traces_fitnes_list.append(a)
 
-    threshold = 0.9
+    threshold = 0.80
     train_cases = [
         trace for i, trace in enumerate(log_all)
-        if 0.85 < traces_fitnes_list[i] < threshold
+        if traces_fitnes_list[i] < threshold
     ]
-    print(log_all)
+    # print(log_all)
     train_cases_ids = [trace.attributes["concept:name"] for trace in train_cases]
     df["case_id"] = df["case_id"].astype(str)
     df    = df[df["case_id"].isin(train_cases_ids)].reset_index(drop=True)
     cases = df["case_id"].unique()
-    print(f"Training (PPO) on {len(cases)} cases (between 0.85 and 0.95), {len(df)} rows")
+    print(f"Training (PPO) on {len(cases)} cases (less than 0.80), {len(df)} rows")
 
     # ── Environment ───────────────────────────────────────────────────────────
     net, im, fm = pm4py.read_pnml(PNML_PATH)
     print("Initial marking:", im)
-    print("genrating final marking with pm4py : \n")
+    print("genrating final marking with pm4py : ")
     sink_place = next(p for p in net.places if p.name == "sink")
     fm = pm4py.generate_marking(net, sink_place)
     print("Final marking  :", fm)
