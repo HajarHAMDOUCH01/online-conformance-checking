@@ -33,7 +33,7 @@ class ActorCritic(nn.Module):
                  # training uses sampling anywway , so sometimes it still starts with an M move away from prefix 
                  # and learns from its actions
                  current_label_bias: float = 5.0,
-                 
+                
                  m_streak_penalty: float = 2.0,
                  max_loop_depth: int = 4): 
         super().__init__()
@@ -321,7 +321,7 @@ class ActorCritic(nn.Module):
             label_str = env.LABEL_SPACE[label]
 
             label_str, move_str, reward, done = env.step(
-                self, valid_labels_mask, move, label.item(),
+                self, i, valid_labels_mask, move, label.item(),
                 list(data['moves']), list(data['labels']),
                 label_logits[0], attn_weights, moves_for_all_labels,
                 compute_reward=compute_reward,
@@ -399,9 +399,7 @@ class ActorCritic(nn.Module):
             i += 1
 
             if i == max_len:
-                print("at step, NOT forced to stop: ", i)
-            # if i >= max_len:
-            #     done = True    
+                print("at step, forced to stop: ", i)  
             if done:
                 break
         if dataset_path is not None and len(offline_dataset) > 0:

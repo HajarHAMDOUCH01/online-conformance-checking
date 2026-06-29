@@ -318,7 +318,7 @@ class AlignmentEnv:
     # Step
     # =========================================================================
 
-    def step(self, model, valid_labels_mask, move_id, label_id,
+    def step(self, model, i, valid_labels_mask, move_id, label_id,
             prev_moves, prev_labels, labels_logits, attn_weights,
             moves_for_all_labels, compute_reward=True, loop_depth=0):
 
@@ -363,20 +363,21 @@ class AlignmentEnv:
                     new_tup  = _m_tuple(new_m)
 
                     # if the agent samples a model move that takes it to a marking in the final place, don't fire that move
-                    valid = (new_tup != current_tup) and (
-                        self._sink_place_name not in new_m or move != "M"
+                    # valid = (new_tup != current_tup) and (
+                    #     self._sink_place_name not in new_m or move != "M"
+                    # )
+                    # if valid:
+                
+                    target_m = self._replay_silent_path(
+                    current_m,
+                    silent_path
                     )
-                    if valid:
-                        target_m = self._replay_silent_path(
-                        current_m,
-                        silent_path
-                        )
 
-                        self.marking = self._fire(
-                            target_m,
-                            matching_t
-                        )
-                        fired = True
+                    self.marking = self._fire(
+                        target_m,
+                        matching_t
+                    )
+                    fired = True
                         # for tau in silent_path:
                         #     self.marking = self.sem.weak_execute(
                         #         tau, self.net, self.marking
@@ -385,28 +386,26 @@ class AlignmentEnv:
                         #     matching_t, self.net, self.marking
                         # )
                         
-                    else: 
-                        self.marking = current_marking
-                        self.pos = current_pos
-                        return None, None, None, None
+                    # else: 
+                    #     self.marking = current_marking
+                    #     self.pos = current_pos
+                    #     return None, None, None, None
 
+
+            if move == "M":
+                jumped_to_final_marking_without_finishing_prefix = (self._sink_place_name == new_m)
+                # for looping behaviour , reward already handles it
             if move == "S" and fired:
                 self.pos += 1
-            if move == "S" and not fired:
-                print(matching_t)
-                print(silent_path)
-                print(valid)
-                print("ERRRRRRROR")
-                raise RuntimeError("Why Sync move not fired !")
 
-        prev_moves.append(move)
+        prev_moves.append(move)  
         prev_labels.append(label)
 
         if compute_reward:
             total_reward, force_done = self.reward_function(
                 prev_moves, prev_labels, labels_logits, attn_weights,
                 moves_for_all_labels, current_marking, current_pos,
-                loop_depth=loop_depth
+                loop_depth=loop_depth, jumped_to_final_marking_without_finishing_prefix=jumped_to_final_marking_without_finishing_prefix, position=i
             )
         else:
             total_reward = 0.0
@@ -469,7 +468,7 @@ class AlignmentEnv:
 
     def reward_function(self, new_moves, new_labels, labels_logits, attn_weights,
                         moves_for_all_labels, current_marking, current_pos,
-                        loop_depth=0):
+                        loop_depth=0, jumped_to_final_marking_without_finishing_prefix=False, position=0):
 
         label = new_labels[-1]
         move  = new_moves[-1]
@@ -546,7 +545,14 @@ class AlignmentEnv:
 
         # completion
         if after_this_step_pos == len(original_prefix):
-            # reward += 15
+            reward += 15.0
+            terminate = True
+
+        if jumped_to_final_marking_without_finishing_prefix:
+            reward -= 15.0
+            terminate = True
+        if position >= 60:
+            reward -= 15.0
             terminate = True
 
         print(
