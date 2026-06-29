@@ -557,7 +557,7 @@ class PetriHeuristicGNN(nn.Module):
     """
 
     def __init__(self, net, place_list, place_idx, vocab_size,
-                 hidden_dim=64, emb_dim=64, n_layers=3):
+                 hidden_dim=64, emb_dim=64, n_layers=5):
         super().__init__()
         self.place_list = place_list
         self.place_idx  = place_idx          # share env.place_idx, same Place objects
@@ -581,7 +581,6 @@ class PetriHeuristicGNN(nn.Module):
                     (self.trans_idx[arc.source], float(arc.weight))
                 )
         self.p2t, self.t2p = p2t, t2p
-        print(self.p2t)
         
         # ---- learned per-node identity (the topology is fixed, so each
         #      node can just learn "who it is") ----
