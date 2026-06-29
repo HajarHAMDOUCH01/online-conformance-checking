@@ -391,8 +391,9 @@ class AlignmentEnv:
                     #     self.pos = current_pos
                     #     return None, None, None, None
 
-
-            if move == "M":
+            if not fired:
+                print("HIIIIIIIII")
+            if move == "M" and fired:
                 jumped_to_final_marking_without_finishing_prefix = (self._sink_place_name == new_m)
                 # for looping behaviour , reward already handles it
             if move == "S" and fired:
