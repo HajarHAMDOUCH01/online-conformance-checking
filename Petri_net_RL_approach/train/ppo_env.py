@@ -322,7 +322,7 @@ class AlignmentEnv:
             prev_moves, prev_labels, labels_logits, attn_weights,
             moves_for_all_labels, compute_reward=True, loop_depth=0):
 
-
+        jumped_to_final_marking_without_finishing_prefix = False
         current_marking = self.marking
         current_pos = self.pos
 
@@ -481,18 +481,12 @@ class AlignmentEnv:
         current_marking = normalize_marking_tuple(current_marking)
         after_this_step_marking = normalize_marking_tuple(after_this_step_marking)
         
-        
-        # print("current_marking type:", type(current_marking))
-        # print("current_marking:", current_marking)
-
-        # print("after_marking type:", type(after_this_step_marking))
-        # print("after_marking:", after_this_step_marking)
-        alignment_before, cost_before, _ = _astar_prefix_alignment(
+        _, cost_before, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=current_marking,
             start_pos=current_pos
         )
-        alignment_after, cost_after, _ = _astar_prefix_alignment(
+        _, cost_after, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=after_this_step_marking,
             start_pos=after_this_step_pos
@@ -546,12 +540,13 @@ class AlignmentEnv:
 
         # completion
         if after_this_step_pos == len(original_prefix):
-            reward += 15.0
+            # reward += 5.0
             terminate = True
 
         if jumped_to_final_marking_without_finishing_prefix:
             reward -= 15.0
             terminate = True
+
         if position >= 60:
             reward -= 15.0
             terminate = True

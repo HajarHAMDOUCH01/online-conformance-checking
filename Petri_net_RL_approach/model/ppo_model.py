@@ -319,7 +319,7 @@ class ActorCritic(nn.Module):
 
             move_str  = env.MOVE_SPACE[move]
             label_str = env.LABEL_SPACE[label]
-
+        
             label_str, move_str, reward, done = env.step(
                 self, i, valid_labels_mask, move, label.item(),
                 list(data['moves']), list(data['labels']),
@@ -399,7 +399,8 @@ class ActorCritic(nn.Module):
             i += 1
 
             if i == max_len:
-                print("at step, forced to stop: ", i)  
+                print("at step, forced to stop: ", i)
+                  
             if done:
                 break
         if dataset_path is not None and len(offline_dataset) > 0:
