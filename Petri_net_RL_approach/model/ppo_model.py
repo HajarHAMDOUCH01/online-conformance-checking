@@ -400,7 +400,7 @@ class ActorCritic(nn.Module):
 
             if i == max_len:
                 print("at step, forced to stop: ", i)
-                  
+
             if done:
                 break
         if dataset_path is not None and len(offline_dataset) > 0:
@@ -581,7 +581,8 @@ class PetriHeuristicGNN(nn.Module):
                     (self.trans_idx[arc.source], float(arc.weight))
                 )
         self.p2t, self.t2p = p2t, t2p
-
+        print(self.p2t)
+        
         # ---- learned per-node identity (the topology is fixed, so each
         #      node can just learn "who it is") ----
         self.place_id_emb = nn.Embedding(self.n_places, hidden_dim)
