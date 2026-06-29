@@ -7,7 +7,7 @@ import torch
 from pm4py.objects.petri_net.obj import Marking
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
-MOVE_COST = {"S": -1.0, "M": 1.0, "L": 2.0}
+MOVE_COST = {"S": 0.0, "M": 1.0, "L": 2.0}
 def normalize_marking_tuple(marking):
 
     if isinstance(marking, tuple):
@@ -541,7 +541,7 @@ class AlignmentEnv:
         new_visit_count = self.visited_states[new_state_key]
         terminate = False
         # revisit penalty
-        # reward -= 0.5 * (new_visit_count - 1)
+        reward -= 0.5 * (new_visit_count - 1)
         # reward -= 0.5 * loop_depth
 
         # completion
