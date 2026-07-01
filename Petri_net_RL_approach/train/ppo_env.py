@@ -7,7 +7,7 @@ import torch
 from pm4py.objects.petri_net.obj import Marking
 from pm4py.objects.petri_net.semantics import ClassicSemantics
 from baselines.A_start_baseline.dataset_generation_a_star import _astar_prefix_alignment
-MOVE_COST = {"S": 0.0, "M": 1.0, "L": 2.0}
+MOVE_COST = {"S": 0.0, "M": 1.0, "L": 1.0}
 def normalize_marking_tuple(marking):
 
     if isinstance(marking, tuple):
@@ -480,7 +480,7 @@ class AlignmentEnv:
 
         current_marking = normalize_marking_tuple(current_marking)
         after_this_step_marking = normalize_marking_tuple(after_this_step_marking)
-        
+
         _, cost_before, _ = _astar_prefix_alignment(
             prefix=original_prefix,
             start_marking=current_marking,
@@ -553,7 +553,9 @@ class AlignmentEnv:
 
         print(
             move,
-            reward
+            reward, 
+            move_cost, 
+            delta_h
         )
 
         return reward, terminate
